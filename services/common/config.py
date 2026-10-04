@@ -1,0 +1,120 @@
+"""Application settings.
+
+Everything defaults to localhost. This project is never deployed — see the
+"Deployment — LOCAL ONLY" section of claude.md.
+"""
+
+from functools import lru_cache
+from pathlib import Path
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=REPO_ROOT / ".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    app_env: str = "local"
+    log_level: str = "INFO"
+    api_host: str = "127.0.0.1"
+    api_port: int = 8000
+    frontend_origin: str = "http://localhost:3000"
+
+    # bcrypt work factor. 12 is the production-grade default; the test suite
+    # drops it so a run that registers dozens of users stays fast.
+    bcrypt_rounds: int = 12
+
+    jwt_secret: str = "dev-only-insecure-secret-change-me"
+    jwt_algorithm: str = "HS256"
+    access_token_ttl_minutes: int = 30
+    refresh_token_ttl_days: int = 14
+    password_reset_ttl_minutes: int = 30
+
+    postgres_user: str = "gd"
+    postgres_password: str = "gd_dev_password"
+    postgres_db: str = "gd"
+    postgres_host: str = "localhost"
+    postgres_port: int = 5432
+
+    # Set directly to override the assembled Postgres URL (the test suite points
+    # this at in-memory SQLite so it runs without Docker).
+    database_url: str | None = None
+
+    redis_url: str = "redis://localhost:6379/0"
+
+    livekit_url: str = "ws://localhost:7880"
+    livekit_api_key: str = "devkey"
+    livekit_api_secret: str = "devsecret_local_only_change_never_shipped"
+
+    minio_endpoint: str = "http://localhost:9000"
+    minio_root_user: str = "gd_minio"
+    minio_root_password: str = "gd_minio_dev_password"
+    minio_bucket: str = "gd-recordings"
+    # "minio" once the container is up; "filesystem" keeps everything on local
+    # disk so the pipeline runs with nothing else started.
+    object_store: str = "filesystem"
+
+    # --- Speech (FR-13) ---
+    # auto | whisper | stub. `auto` prefers Whisper, falls back to the stub.
+    stt_provider: str = "auto"
+    whisper_model: str = "base"
+
+    # --- LLM layer (design §54) ---
+    # anthropic | stub. `stub` keeps the agentic pipeline runnable offline.
+    llm_provider: str = "stub"
+    llm_model: str = "claude-sonnet-4-5"
+    # Generic key, provider-agnostic. If unset, the adapters fall back to the
+    # vendor's own conventional variable name below — someone who pastes
+    # OPENAI_API_KEY into .env should not have to discover a second name.
+    llm_api_key: str = ""
+    openai_api_key: str = ""
+    anthropic_api_key: str = ""
+    llm_max_tokens: int = 2048
+    llm_timeout_seconds: float = 60.0
+    llm_max_retries: int = 3
+
+    # --- Orchestration engine ---
+    # langgraph | native. `langgraph` runs the evaluation workflow as a
+    # compiled state graph with dynamic fan-out and checkpointing; `native`
+    # drives the same stages with plain asyncio. Identical agents, contracts
+    # and aggregator either way.
+    evaluation_engine: str = "langgraph"
+
+    # --- Evaluation dispatch ---
+    # per_dimension | per_candidate. `per_dimension` sends one call per
+    # specialist covering every candidate (design §49); `per_candidate` sends
+    # one call per pair. Both produce identical downstream data.
+    evaluation_strategy: str = "per_dimension"
+
+    # --- Evaluation (design §40) ---
+    prompt_version: str = "1.0"
+    agent_version: str = "1.0"
+
+    cors_origins: list[str] = Field(default_factory=list)
+
+    @property
+    def sqlalchemy_url(self) -> str:
+        if self.database_url:
+            return self.database_url
+        return (
+            f"postgresql+asyncpg://{self.postgres_user}:{self.postgres_password}"
+            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        )
+
+    @property
+    def allowed_origins(self) -> list[str]:
+        return self.cors_origins or [self.frontend_origin]
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
+
+
+settings = get_settings()

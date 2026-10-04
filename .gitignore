@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+.turbo/
+npm-debug.log*
+
+# Local secrets and state — never commit
+.env
+.env.local
+*.local.env
+
+# Local volumes / generated data
+infra/data/
+services/media/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local tool state / build artefacts
+.claude/settings.local.json
+*.tsbuildinfo

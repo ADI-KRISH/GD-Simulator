@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gd-platform/contracts/candidate_metrics.schema.json",
+  "title": "CandidateMetrics",
+  "description": "Objective, DETERMINISTIC per-candidate metrics computed in code from speech events. Never estimated by an LLM. The Behavior agent and aggregator consume these. See design §17, §18, §57 Principle 8.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["session_id", "candidate_id", "speaking_seconds", "participation_ratio", "turns", "interruptions", "responses", "questions"],
+  "properties": {
+    "session_id": { "type": "string", "minLength": 1 },
+    "candidate_id": { "type": "string", "minLength": 1 },
+    "speaking_seconds": {
+      "type": "number",
+      "description": "Total seconds this candidate spoke.",
+      "minimum": 0
+    },
+    "participation_ratio": {
+      "type": "number",
+      "description": "Share of total speaking time, 0.0–1.0.",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "turns": { "type": "integer", "minimum": 0 },
+    "interruptions": { "type": "integer", "minimum": 0 },
+    "responses": {
+      "type": "integer",
+      "description": "Number of direct responses to other candidates.",
+      "minimum": 0
+    },
+    "questions": { "type": "integer", "minimum": 0 },
+    "arguments_introduced": { "type": "integer", "minimum": 0 },
+    "arguments_supported": { "type": "integer", "minimum": 0 },
+    "arguments_challenged": { "type": "integer", "minimum": 0 },
+    "response_latency_seconds": {
+      "type": "number",
+      "description": "Average latency before responding when addressed.",
+      "minimum": 0
+    }
+  },
+  "examples": [
+    {
+      "session_id": "GD123",
+      "candidate_id": "A",
+      "speaking_seconds": 245,
+      "participation_ratio": 0.29,
+      "turns": 17,
+      "interruptions": 2,
+      "responses": 8,
+      "questions": 3
+    }
+  ]
+}

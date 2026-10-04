@@ -1,0 +1,178 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="1060" viewBox="0 0 1400 1060" font-family="Segoe UI, Inter, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4b5168"/>
+    </marker>
+    <marker id="arrow-p" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#6d5cff"/>
+    </marker>
+    <style>
+      .title { font-size: 30px; font-weight: 700; fill: #161a2b; }
+      .sub { font-size: 15px; fill: #626a82; }
+      .lane { font-size: 13px; font-weight: 700; letter-spacing: 1.5px; fill: #626a82; }
+      .h { font-size: 17px; font-weight: 700; fill: #161a2b; }
+      .t { font-size: 13px; fill: #3d4458; }
+      .tag { font-size: 11px; font-weight: 700; letter-spacing: 1px; }
+      .llm { fill: #f1eeff; stroke: #6d5cff; stroke-width: 2; }
+      .code { fill: #e8f8f0; stroke: #10a36a; stroke-width: 2; }
+      .data { fill: #f3f4f8; stroke: #9aa1b5; stroke-width: 2; }
+      .edge { stroke: #4b5168; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+      .fan { stroke: #6d5cff; stroke-width: 1.8; fill: none; stroke-dasharray: 6 4; marker-end: url(#arrow-p); }
+      .cond { stroke: #4b5168; stroke-width: 2; fill: none; stroke-dasharray: 6 4; marker-end: url(#arrow); }
+      .elabel { font-size: 12px; fill: #626a82; font-style: italic; }
+    </style>
+  </defs>
+
+  <rect width="1400" height="1060" fill="#ffffff"/>
+
+  <text x="40" y="52" class="title">GD Platform — agentic evaluation flow</text>
+  <text x="40" y="78" class="sub">Language models observe and judge; deterministic code measures behaviour and computes every final score.</text>
+
+  <!-- LANE 1: LIVE -->
+  <rect x="20" y="100" width="1360" height="300" rx="18" fill="#fafbff" stroke="#e3e6f0"/>
+  <text x="40" y="128" class="lane">1 · DURING THE DISCUSSION (LIVE)</text>
+
+  <rect x="40" y="165" width="220" height="105" rx="12" class="data"/>
+  <text x="58" y="194" class="h">Candidates</text>
+  <text x="58" y="218" class="t">Humans (own mic → Whisper)</text>
+  <text x="58" y="238" class="t">or AI persona agents</text>
+  <text x="58" y="258" class="t">(local demo mode)</text>
+
+  <rect x="320" y="165" width="220" height="105" rx="12" class="data"/>
+  <text x="338" y="194" class="h">Transcript + speech</text>
+  <text x="338" y="218" class="t">Who said what, and when</text>
+  <text x="338" y="238" class="t">Speaker known exactly —</text>
+  <text x="338" y="258" class="t">one stream per person</text>
+  <path d="M260 217 L316 217" class="edge"/>
+
+  <rect x="610" y="140" width="260" height="95" rx="12" class="code"/>
+  <text x="628" y="166" class="tag" fill="#10a36a">CODE</text>
+  <text x="628" y="189" class="h">Metrics engine</text>
+  <text x="628" y="212" class="t">speaking time · share · turns</text>
+  <text x="628" y="229" class="t">interruptions · responses · questions</text>
+  <path d="M540 200 L606 186" class="edge"/>
+
+  <rect x="610" y="270" width="260" height="105" rx="12" class="llm"/>
+  <text x="628" y="296" class="tag" fill="#6d5cff">LLM AGENT</text>
+  <text x="628" y="319" class="h">Observer agent</text>
+  <text x="628" y="342" class="t">Folds in each closed 45 s window:</text>
+  <text x="628" y="360" class="t">previous state + chunk + metrics</text>
+  <path d="M540 240 L606 305" class="edge"/>
+  <path d="M740 235 L740 266" class="edge"/>
+
+  <rect x="940" y="270" width="250" height="105" rx="12" class="data"/>
+  <text x="958" y="298" class="h">Rolling state</text>
+  <text x="958" y="322" class="t">arguments · positions · interactions</text>
+  <text x="958" y="342" class="t">observations — never scores</text>
+  <text x="958" y="362" class="t">(no score field in the contract)</text>
+  <path d="M870 322 L936 322" class="edge"/>
+
+  <rect x="1240" y="165" width="120" height="105" rx="12" class="data"/>
+  <text x="1256" y="194" class="h">Live room</text>
+  <text x="1256" y="218" class="t">transcript</text>
+  <text x="1256" y="238" class="t">speaking tiles</text>
+  <text x="1256" y="258" class="t">Observer notes</text>
+  <path d="M1190 300 C1230 300 1300 300 1300 274" class="edge"/>
+  <path d="M540 175 L575 175 L575 118 L1290 118 L1290 161" class="edge"/>
+
+  <!-- LANE 2: HANDOFF -->
+  <rect x="20" y="420" width="1360" height="64" rx="18" fill="#fff8e8" stroke="#f1d38a"/>
+  <text x="40" y="458" class="h">⏱  Timer ends (or host ends)  →  session ENDED  →  evaluation job on Redis Streams queue  →  evaluation worker</text>
+  <text x="1092" y="458" class="elabel">idempotent: one report per job</text>
+  <path d="M700 400 L700 416" class="edge"/>
+  <path d="M700 484 L700 500" class="edge"/>
+
+  <!-- LANE 3: LANGGRAPH -->
+  <rect x="20" y="504" width="1360" height="460" rx="18" fill="#fafbff" stroke="#e3e6f0"/>
+  <text x="40" y="532" class="lane">2 · FINAL EVALUATION — LANGGRAPH STATE GRAPH</text>
+
+  <rect x="40" y="570" width="200" height="130" rx="12" class="data"/>
+  <text x="58" y="598" class="h">Inputs</text>
+  <text x="58" y="622" class="t">full transcript</text>
+  <text x="58" y="642" class="t">rolling state</text>
+  <text x="58" y="662" class="t">measured metrics</text>
+  <text x="58" y="682" class="t">GD type + rubric weights</text>
+
+  <rect x="290" y="570" width="230" height="130" rx="12" class="code"/>
+  <text x="308" y="596" class="tag" fill="#10a36a">CODE · SUPERVISOR</text>
+  <text x="308" y="620" class="h">plan</text>
+  <text x="308" y="644" class="t">pick specialists by GD type</text>
+  <text x="308" y="664" class="t">build one evidence packet</text>
+  <text x="308" y="684" class="t">per candidate</text>
+  <path d="M240 635 L286 635" class="edge"/>
+
+  <text x="590" y="560" class="h">evaluate</text>
+  <text x="670" y="560" class="elabel">parallel fan-out · one call per specialist, all candidates</text>
+  <rect x="590" y="574" width="270" height="44" rx="10" class="llm"/>
+  <text x="608" y="602" class="h" font-size="15">Content</text>
+  <rect x="590" y="626" width="270" height="44" rx="10" class="llm"/>
+  <text x="608" y="654" class="h" font-size="15">Communication</text>
+  <rect x="590" y="678" width="270" height="44" rx="10" class="llm"/>
+  <text x="608" y="706" class="h" font-size="15">Leadership</text>
+  <rect x="590" y="730" width="270" height="44" rx="10" class="llm"/>
+  <text x="608" y="758" class="h" font-size="15">Collaboration</text>
+  <rect x="590" y="782" width="270" height="44" rx="10" class="llm"/>
+  <text x="608" y="810" class="h" font-size="15">Critical thinking</text>
+  <rect x="590" y="834" width="270" height="44" rx="10" class="llm"/>
+  <text x="608" y="862" class="h" font-size="15">Behaviour</text>
+  <text x="590" y="902" class="t">Each: written rubric → score 0–10 + confidence</text>
+  <text x="590" y="920" class="t">+ transcript evidence, schema-validated</text>
+  <text x="590" y="938" class="t">GD type selects 4–5 of these six</text>
+
+  <path d="M520 615 L586 596" class="fan"/>
+  <path d="M520 625 L586 648" class="fan"/>
+  <path d="M520 635 L586 700" class="fan"/>
+  <path d="M520 645 L586 752" class="fan"/>
+  <path d="M520 655 L586 804" class="fan"/>
+  <path d="M520 665 L586 856" class="fan"/>
+
+  <rect x="930" y="570" width="210" height="120" rx="12" class="code"/>
+  <text x="948" y="596" class="tag" fill="#10a36a">CODE</text>
+  <text x="948" y="620" class="h">collect</text>
+  <text x="948" y="644" class="t">validate every output</text>
+  <text x="948" y="664" class="t">flag judges &gt; 2 pts apart</text>
+  <text x="948" y="684" class="t">failures isolated</text>
+  <path d="M860 596 L926 610" class="edge"/>
+  <path d="M860 700 L926 640" class="edge"/>
+  <path d="M860 856 L926 670" class="edge"/>
+
+  <rect x="1200" y="585" width="160" height="90" rx="45" class="data"/>
+  <text x="1222" y="622" class="h">END</text>
+  <text x="1222" y="645" class="t">every specialist</text>
+  <text x="1222" y="663" class="t">failed → review</text>
+  <path d="M1140 630 L1196 630" class="cond"/>
+
+  <rect x="930" y="740" width="210" height="140" rx="12" class="code"/>
+  <text x="948" y="766" class="tag" fill="#10a36a">CODE · NO MODEL</text>
+  <text x="948" y="790" class="h">aggregate</text>
+  <text x="948" y="814" class="t">Overall = 10 × Σ score × w</text>
+  <text x="948" y="834" class="t">missing judge → weight</text>
+  <text x="948" y="852" class="t">renormalised, never zero</text>
+  <text x="948" y="870" class="t">reproducible every time</text>
+  <path d="M1035 690 L1035 736" class="cond"/>
+
+  <rect x="1180" y="720" width="180" height="120" rx="12" class="llm"/>
+  <text x="1196" y="746" class="tag" fill="#6d5cff">LLM + TOOLS</text>
+  <text x="1196" y="770" class="h">synthesise</text>
+  <text x="1196" y="794" class="t">narrative + 1 priority</text>
+  <text x="1196" y="814" class="t">compute_final_score()</text>
+  <text x="1196" y="832" class="t">score_if() — read-only</text>
+  <path d="M1140 795 L1176 785" class="cond"/>
+
+  <rect x="1180" y="866" width="180" height="84" rx="12" class="data"/>
+  <text x="1196" y="893" class="h">Report + PDF</text>
+  <text x="1196" y="915" class="t">equation · evidence</text>
+  <text x="1196" y="934" class="t">group summary</text>
+  <path d="M1270 840 L1270 862" class="edge"/>
+
+  <!-- LEGEND -->
+  <rect x="40" y="990" width="22" height="22" rx="5" class="llm"/>
+  <text x="72" y="1006" class="t">Language-model agent (judges / observes, never computes the final score)</text>
+  <rect x="560" y="990" width="22" height="22" rx="5" class="code"/>
+  <text x="592" y="1006" class="t">Deterministic code (measures, orchestrates, aggregates)</text>
+  <rect x="970" y="990" width="22" height="22" rx="5" class="data"/>
+  <text x="1002" y="1006" class="t">Data / storage / UI</text>
+  <path d="M1150 1001 L1200 1001" class="cond"/>
+  <text x="1210" y="1006" class="t">conditional / fan-out edge</text>
+  <text x="40" y="1040" class="elabel">Graph topology matches services/evaluation/graph.py (render_mermaid): plan → evaluate (Send fan-out) → collect → aggregate | END → synthesise → END.</text>
+</svg>

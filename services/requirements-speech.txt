@@ -1,0 +1,15 @@
+# Optional: real speech-to-text (FR-13).
+#
+# Kept out of requirements.txt on purpose. faster-whisper pulls in CTranslate2
+# and downloads model weights (~150 MB for `base`, more for larger models) on
+# first use. Without it the STT layer falls back to the deterministic stub, so
+# the whole pipeline — ingestion, chunking, metrics, observer, evaluation —
+# still runs on a fresh checkout.
+#
+#   ./.venv/Scripts/python.exe -m pip install -r services/requirements-speech.txt
+#
+# Then set STT_PROVIDER=whisper (or leave it at `auto`, which prefers Whisper
+# whenever it is importable) and WHISPER_MODEL=base|small|medium in .env.
+faster-whisper==1.2.1
+# PyAV 19 dropped the `metadata_errors` argument faster-whisper passes to av.open().
+av>=11,<19

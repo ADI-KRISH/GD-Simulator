@@ -1,0 +1,20 @@
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["services/tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+# Starlette's TestClient (WebSocket tests only) tears down its event loop while
+# aiosqlite's worker thread is still finishing, which surfaces as an unhandled
+# thread exception. It is a harness artifact, not a product failure — under
+# uvicorn the handler completes normally. Filtered narrowly so real unhandled
+# thread exceptions still fail loudly.
+filterwarnings = [
+    "ignore:.*Exception in thread Thread-.*:pytest.PytestUnhandledThreadExceptionWarning",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]

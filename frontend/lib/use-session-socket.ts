@@ -1,0 +1,209 @@
+"use client";
+
+/**
+ * WebSocket control plane client (FR-09, design §10).
+ *
+ * Control events only — audio and video go over LiveKit, not through here.
+ *
+ * The server is authoritative for everything this hook exposes. It never
+ * counts the clock down locally or guesses at a state change: it renders the
+ * last frame the server sent. That is what keeps every participant's screen
+ * agreeing with every other's.
+ */
+
+import { useCallback, useEffect, useRef, useState } from "react";
+
+import { API_URL, tokenStore } from "./api";
+import type { LobbyView, TimerView, TopicView } from "./types";
+
+export type ServerEventType =
+  | "USER_JOINED"
+  | "USER_LEFT"
+  | "USER_READY"
+  | "SPEECH_STARTED"
+  | "SPEECH_STOPPED"
+  | "TIMER_STARTED"
+  | "TIMER_UPDATED"
+  | "SESSION_STARTED"
+  | "SESSION_ENDED"
+  | "DISCONNECTED"
+  | "RECONNECTED"
+  | "STATE_SNAPSHOT"
+  | "TOPIC_RELEASED"
+  | "TRANSCRIPT_APPENDED"
+  | "METRICS_UPDATED"
+  | "EVALUATION_COMPLETED"
+  | "ERROR";
+
+export interface Frame {
+  type: ServerEventType;
+  session_id: string;
+  payload: Record<string, unknown>;
+  at: string;
+}
+
+export interface SocketState {
+  connected: boolean;
+  lobby: LobbyView | null;
+  timer: TimerView | null;
+  topic: TopicView | null;
+  sessionState: string | null;
+  you: string | null;
+  speaking: string[];
+  events: Frame[];
+  error: string | null;
+  evaluationReady: boolean;
+}
+
+const INITIAL: SocketState = {
+  connected: false,
+  lobby: null,
+  timer: null,
+  topic: null,
+  sessionState: null,
+  you: null,
+  speaking: [],
+  events: [],
+  error: null,
+  evaluationReady: false,
+};
+
+// Keep the visible log short — it is a debug aid, not a transcript.
+const MAX_EVENTS = 50;
+
+// Reconnect backoff, capped. A dropped socket must not end the session, so the
+// client keeps trying rather than giving up (design §9).
+const RECONNECT_BASE_MS = 500;
+const RECONNECT_MAX_MS = 10_000;
+
+export function useSessionSocket(sessionId: string | null) {
+  const [state, setState] = useState<SocketState>(INITIAL);
+  const socketRef = useRef<WebSocket | null>(null);
+  const attemptRef = useRef(0);
+  const closedByUs = useRef(false);
+
+  const send = useCallback((type: string, payload: Record<string, unknown> = {}) => {
+    const socket = socketRef.current;
+    if (socket?.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type, payload }));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    closedByUs.current = false;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+
+    const connect = () => {
+      const token = tokenStore.access;
+      if (!token) return;
+
+      // The browser WebSocket API cannot set an Authorization header, so the
+      // short-lived access token rides in the query string.
+      const url = `${API_URL.replace(/^http/, "ws")}/ws/sessions/${sessionId}?token=${token}`;
+      const socket = new WebSocket(url);
+      socketRef.current = socket;
+
+      socket.onopen = () => {
+        attemptRef.current = 0;
+        setState((prev) => ({ ...prev, connected: true, error: null }));
+      };
+
+      socket.onmessage = (message) => {
+        let frame: Frame;
+        try {
+          frame = JSON.parse(message.data);
+        } catch {
+          return;
+        }
+        setState((prev) => apply(prev, frame));
+      };
+
+      socket.onclose = (event) => {
+        setState((prev) => ({ ...prev, connected: false }));
+        if (closedByUs.current) return;
+        // 4401/4403/4404 are our own rejections — retrying will not help.
+        if (event.code >= 4400 && event.code < 4500) {
+          setState((prev) => ({ ...prev, error: event.reason || "connection refused" }));
+          return;
+        }
+        const delay = Math.min(
+          RECONNECT_BASE_MS * 2 ** attemptRef.current,
+          RECONNECT_MAX_MS,
+        );
+        attemptRef.current += 1;
+        timeout = setTimeout(connect, delay);
+      };
+    };
+
+    connect();
+    return () => {
+      closedByUs.current = true;
+      if (timeout) clearTimeout(timeout);
+      socketRef.current?.close();
+      socketRef.current = null;
+    };
+  }, [sessionId]);
+
+  const setReady = useCallback((ready: boolean) => send(ready ? "READY" : "NOT_READY"), [send]);
+  const speechStarted = useCallback(() => send("SPEECH_STARTED"), [send]);
+  const speechStopped = useCallback(() => send("SPEECH_STOPPED"), [send]);
+
+  return { ...state, setReady, speechStarted, speechStopped, send };
+}
+
+function apply(prev: SocketState, frame: Frame): SocketState {
+  const events = [frame, ...prev.events].slice(0, MAX_EVENTS);
+  const label = frame.payload.candidate_label as string | undefined;
+
+  switch (frame.type) {
+    case "STATE_SNAPSHOT": {
+      // A ping response reuses this frame type but carries no snapshot.
+      if (frame.payload.pong) return { ...prev, events };
+      return {
+        ...prev,
+        events,
+        you: (frame.payload.you as string) ?? prev.you,
+        sessionState: (frame.payload.session_state as string) ?? prev.sessionState,
+        lobby: (frame.payload.lobby as LobbyView) ?? prev.lobby,
+        timer: (frame.payload.timer as TimerView) ?? prev.timer,
+        topic: (frame.payload.topic as TopicView) ?? prev.topic,
+      };
+    }
+    case "TIMER_UPDATED":
+    case "TIMER_STARTED":
+      return { ...prev, events, timer: frame.payload as unknown as TimerView };
+    case "TOPIC_RELEASED":
+      return { ...prev, events, topic: frame.payload as unknown as TopicView };
+    case "SESSION_STARTED":
+      return {
+        ...prev,
+        events,
+        sessionState: frame.payload.phase === "discussion" ? "LIVE" : "STARTING",
+      };
+    case "SESSION_ENDED":
+      return { ...prev, events, sessionState: "ENDED" };
+    case "EVALUATION_COMPLETED":
+      return { ...prev, events, evaluationReady: true, sessionState: "COMPLETED" };
+    case "SPEECH_STARTED":
+      return {
+        ...prev,
+        events,
+        speaking: label && !prev.speaking.includes(label) ? [...prev.speaking, label] : prev.speaking,
+      };
+    case "SPEECH_STOPPED":
+      return { ...prev, events, speaking: prev.speaking.filter((s) => s !== label) };
+    case "ERROR":
+      return { ...prev, events, error: (frame.payload.message as string) ?? "error" };
+    default:
+      // USER_JOINED / USER_LEFT / USER_READY / DISCONNECTED / RECONNECTED all
+      // change the roster; the lobby view is refetched by the page rather than
+      // patched here, so one source of truth stays in charge of it.
+      return { ...prev, events };
+  }
+}
+
+export function formatClock(seconds: number): string {
+  const safe = Math.max(0, Math.floor(seconds));
+  return `${String(Math.floor(safe / 60)).padStart(2, "0")}:${String(safe % 60).padStart(2, "0")}`;
+}
