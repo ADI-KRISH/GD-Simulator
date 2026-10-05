@@ -173,7 +173,9 @@ export default function RoomPage() {
       </div>
 
       {error && <div className="alert alert--error">{error}</div>}
-      {media.error && <div className="alert alert--error">Media: {media.error}</div>}
+      {/* A watching host publishes nothing, so a missing media server (e.g. no
+          LiveKit when running without Docker) is not their problem to see. */}
+      {media.error && !observing && <div className="alert alert--error">Media: {media.error}</div>}
       {media.uploadError && (
         <div className="alert alert--error">
           Transcription upload failed ({media.uploadError}). The discussion is unaffected — the

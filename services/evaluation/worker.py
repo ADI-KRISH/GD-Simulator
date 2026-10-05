@@ -82,6 +82,11 @@ async def _run_queued(session: AsyncSession, queued: queue.QueuedJob) -> bool:
         # Redelivery of an already-finished job (design §39): ack and move on.
         return True
 
+    return await _run_job(session, job)
+
+
+async def _run_job(session: AsyncSession, job: EvaluationJob) -> bool:
+    """Run one job, recording a failure on a fresh session. True on success."""
     try:
         await service.run_job(session, job)
         await session.commit()
@@ -104,7 +109,7 @@ async def drain(factory: async_sessionmaker[AsyncSession], *, block_ms: int = 10
         jobs.extend(await queue.claim_stalled(CONSUMER_NAME))
     except Exception as exc:
         logger.debug("evaluation queue unavailable", extra={"error": str(exc)})
-        return 0
+        return await drain_from_database(factory)
 
     completed = 0
     for queued in jobs:
@@ -115,6 +120,34 @@ async def drain(factory: async_sessionmaker[AsyncSession], *, block_ms: int = 10
             completed += 1
         else:
             await queue.retry(queued, "worker run failed")
+    return completed
+
+
+async def drain_from_database(factory: async_sessionmaker[AsyncSession]) -> int:
+    """Fallback when Redis is unreachable: run QUEUED jobs straight from the DB.
+
+    The job row is the authority and the queue only the fast path (see the
+    module docstring), so a missing queue degrades latency, never correctness.
+    This is what lets the platform run with no Redis at all.
+
+    ponytail: one worker, no claim/lock. Two workers without Redis could both
+    pick the same job; the (session_id, evaluation_version) constraint keeps
+    the result single, but it would be computed twice.
+    """
+    async with factory() as session:
+        result = await session.execute(
+            select(EvaluationJob.id).where(EvaluationJob.state == str(EvaluationState.QUEUED))
+        )
+        job_ids = list(result.scalars())
+
+    completed = 0
+    for job_id in job_ids:
+        async with factory() as session:
+            job = await repo.get_job(session, job_id)
+            if job is None or EvaluationState(job.state) is not EvaluationState.QUEUED:
+                continue
+            if await _run_job(session, job):
+                completed += 1
     return completed
 
 

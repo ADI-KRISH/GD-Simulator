@@ -279,3 +279,23 @@ async def test_the_report_carries_a_synthesis_narrative(
     ]
     # And it has nowhere to put a score of its own.
     assert "overall_score" not in synthesis
+
+
+async def test_without_redis_the_worker_runs_queued_jobs_from_the_database(
+    session_factory, client: AsyncClient, evaluated, host_auth, monkeypatch
+):
+    """No-Docker mode: the queue is unreachable, the job row is still the
+    authority, so the worker must evaluate it straight from the database."""
+    from services.evaluation import queue, worker
+
+    queued = await client.post(f"/api/v1/sessions/{evaluated['id']}/evaluate", headers=host_auth)
+    assert queued.json()["state"] == "QUEUED"
+
+    async def unreachable(*args, **kwargs):
+        raise ConnectionError("redis is not running")
+
+    monkeypatch.setattr(queue, "read", unreachable)
+    assert await worker.drain(session_factory) == 1
+
+    status = await client.get(f"/api/v1/sessions/{evaluated['id']}/evaluation", headers=host_auth)
+    assert status.json()["state"] == "COMPLETED"

@@ -49,6 +49,13 @@ Three things are deliberately **not** done by a language model:
 
 ## Running it
 
+**One step:** double-click `start.bat` (or run `.\start.ps1`). It starts Docker
+Desktop if needed, brings up the containers, runs migrations, rebuilds the
+frontend only if its source changed, opens the backend and frontend in their own
+windows, waits until both answer, and opens http://localhost:3000. Safe to re-run.
+
+The manual steps below are what it automates.
+
 ### 1. Infrastructure
 
 ```bash
@@ -109,6 +116,28 @@ The Python suite runs against in-memory SQLite with stubbed STT, LLM and object
 storage — **no Docker, no Redis, no model download and no API key required**.
 
 ---
+
+### Without Docker (AI-agent demo)
+
+The AI-agent demo needs none of the containers. SQLite replaces Postgres,
+`REDIS_URL=disabled` makes every Redis call fail instantly (events are dropped
+and the evaluation worker runs jobs straight from the database), recordings use
+the local filesystem, and agents publish no media so LiveKit is unused.
+
+```powershell
+# Backend (PowerShell, repo root)
+$env:DATABASE_URL = "sqlite+aiosqlite:///./gd_local.db"
+$env:REDIS_URL = "disabled"
+.\.venv\Scripts\alembic.exe upgrade head
+.\.venv\Scripts\python.exe -m uvicorn services.main:app --host 127.0.0.1 --port 8000
+
+# Frontend (second window)
+cd frontend; npm run build; npm start
+```
+
+`/health` reports `degraded` (Redis is off) — that is expected. What does not
+work without Docker: real audio/video between people (LiveKit). Transcription
+and evaluation still work.
 
 ## Optional: real STT and real evaluation
 
