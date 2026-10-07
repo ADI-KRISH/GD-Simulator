@@ -61,9 +61,22 @@ class Settings(BaseSettings):
     object_store: str = "filesystem"
 
     # --- Speech (FR-13) ---
-    # auto | whisper | stub. `auto` prefers Whisper, falls back to the stub.
+    # auto | elevenlabs | whisper | stub. `auto` prefers ElevenLabs Scribe when a
+    # key is set, then Whisper, then the stub.
     stt_provider: str = "auto"
     whisper_model: str = "base"
+
+    # --- ElevenLabs (practice mode voice) ---
+    # Cloud vendor, kept behind the STT/TTS interfaces. Empty key = offline
+    # fallbacks (Whisper/stub STT, browser speech for the personas).
+    elevenlabs_api_key: str = ""
+    elevenlabs_base_url: str = "https://api.elevenlabs.io"
+    elevenlabs_tts_model: str = "eleven_turbo_v2_5"
+    # Per-persona voice overrides as JSON, e.g. {"bhavana": "<voice_id>"}.
+    persona_voices: dict[str, str] = Field(default_factory=dict)
+    elevenlabs_stt_model: str = "scribe_v1"
+    # auto | elevenlabs | stub
+    tts_provider: str = "auto"
 
     # --- LLM layer (design §54) ---
     # anthropic | stub. `stub` keeps the agentic pipeline runnable offline.
@@ -91,6 +104,11 @@ class Settings(BaseSettings):
     # specialist covering every candidate (design §49); `per_candidate` sends
     # one call per pair. Both produce identical downstream data.
     evaluation_strategy: str = "per_dimension"
+    # Specialists use evidence tools and a critic audits them (vs. one-shot prompts).
+    evaluation_agentic: bool = True
+    # Deterministic score penalty per interruption a candidate made, and its cap.
+    interruption_penalty_points: float = 2.0
+    interruption_penalty_cap: float = 15.0
 
     # --- Evaluation (design §40) ---
     prompt_version: str = "1.0"

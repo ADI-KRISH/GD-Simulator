@@ -57,16 +57,6 @@ export default function NewSessionPage() {
 
   if (loading) return <p className="empty">Loading…</p>;
   if (!user) return <p className="empty">Sign in to create a discussion.</p>;
-  if (user.role === "candidate") {
-    return (
-      <div className="card">
-        <h1>Hosts only</h1>
-        <p className="subtitle">
-          Your account is a candidate account, so it can join discussions but not create them.
-        </p>
-      </div>
-    );
-  }
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();

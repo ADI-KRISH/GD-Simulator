@@ -42,6 +42,7 @@ from services.evaluation.models import AgentOutput, CandidateScore, EvaluationJo
 from services.evaluation.report import build_candidate_report, build_group_report
 from services.evaluation.supervisor import run as run_supervisor
 from services.evaluation.synthesis import synthesise
+from services.evaluation.tools import TurnRecord
 from services.metrics import service as metrics_service
 from services.notifications.models import NotificationKind
 from services.notifications.service import notify
@@ -86,6 +87,21 @@ class OrchestrationOutcome:
     syntheses: dict
 
 
+def eval_topic(gd: GDSession) -> str:
+    """The topic as the evaluators see it.
+
+    A practice session has one candidate and non-scored AI personas; saying so
+    keeps Leadership/Collaboration from penalising the lack of human peers.
+    """
+    if gd.mode != "solo":
+        return gd.topic
+    names = ", ".join(p["name"] for p in gd.personas)
+    return (
+        f"{gd.topic}\n[Practice session: candidate A debated AI personas ({names}), who are "
+        "not scored. Judge collaboration and leadership by how A engaged with them.]"
+    )
+
+
 async def _orchestrate(
     gd: GDSession,
     labels: list[str],
@@ -96,12 +112,15 @@ async def _orchestrate(
     *,
     attempt: int = 1,
     evaluation_version: int = 1,
+    turns: list | None = None,
+    interruptions: dict[str, list[float]] | None = None,
 ) -> OrchestrationOutcome:
     """Run the evaluation workflow on the configured engine."""
+    topic = eval_topic(gd)
     if settings.evaluation_engine.lower() == ENGINE_LANGGRAPH:
         final = await run_graph(
             session_id=str(gd.id),
-            topic=gd.topic,
+            topic=topic,
             gd_type=gd.gd_type,
             duration_seconds=gd.duration_seconds,
             candidates=labels,
@@ -111,6 +130,8 @@ async def _orchestrate(
             weights=weights,
             attempt=attempt,
             evaluation_version=evaluation_version,
+            turns=turns,
+            interruptions=interruptions,
         )
         return OrchestrationOutcome(
             outputs_by_candidate=final.get("outputs_by_candidate", {}),
@@ -124,7 +145,7 @@ async def _orchestrate(
     # `native`: the same stages driven directly by asyncio.
     result = await run_supervisor(
         session_id=str(gd.id),
-        topic=gd.topic,
+        topic=topic,
         gd_type=gd.gd_type,
         duration_seconds=gd.duration_seconds,
         candidates=labels,
@@ -132,7 +153,7 @@ async def _orchestrate(
         metrics=metrics,
         state=state,
     )
-    scores = aggregate_session(result.outputs_by_candidate, weights)
+    scores = aggregate_session(result.outputs_by_candidate, weights, interruptions)
     syntheses = dict(
         zip(
             scores,
@@ -143,7 +164,7 @@ async def _orchestrate(
                         result.outputs_by_candidate.get(label, []),
                         score.weights or weights,
                         metrics.per_candidate[label],
-                        gd.topic,
+                        topic,
                     )
                     for label, score in scores.items()
                 )
@@ -159,6 +180,12 @@ async def _orchestrate(
         scores=scores,
         syntheses=syntheses,
     )
+
+
+def _provenance(runs: list, output) -> dict:
+    """Tool calls the specialist made and what the critic said about its verdict."""
+    run = next((r for r in runs if r.output is output), None)
+    return {"tool_calls": run.tool_calls, "critic": run.critic} if run else {}
 
 
 async def _set_job_state(
@@ -279,6 +306,11 @@ async def run_job(session: AsyncSession, job: EvaluationJob) -> EvaluationJob:
     if not labels:
         raise ConflictError("session has no participants to evaluate")
 
+    # Tracked turns feed the evidence tools and the interruption penalty; both
+    # modes write them the same way.
+    tracked_turns = await session_repo.list_turns(session, gd.id)
+    interruptions = await session_service.interruption_times(session, gd.id)
+
     # 2. Orchestration (design §20, §21): plan, dispatch, collect, resolve,
     #    aggregate, synthesise. LangGraph runs this as a state graph; the
     #    `native` engine is the same stages driven by plain asyncio.
@@ -292,6 +324,11 @@ async def run_job(session: AsyncSession, job: EvaluationJob) -> EvaluationJob:
         job.rubric,
         attempt=job.attempts,
         evaluation_version=job.evaluation_version,
+        turns=[
+            TurnRecord(t.candidate_label, t.start, t.end, t.interrupted_label, t.reply_to_label)
+            for t in tracked_turns
+        ],
+        interruptions=interruptions,
     )
 
     if outcome.failures:
@@ -319,6 +356,7 @@ async def run_job(session: AsyncSession, job: EvaluationJob) -> EvaluationJob:
                     strengths=output.strengths,
                     weaknesses=output.weaknesses,
                     evidence=[e.model_dump() for e in output.evidence],
+                    provenance=_provenance(outcome.runs, output),
                 ),
             )
 
@@ -338,9 +376,15 @@ async def run_job(session: AsyncSession, job: EvaluationJob) -> EvaluationJob:
                 weights=score.weights,
                 confidence=score.confidence,
                 needs_human_review=score.needs_human_review,
-                metrics=metrics.per_candidate[label].model_dump()
-                if label in metrics.per_candidate
-                else {},
+                metrics={
+                    **(
+                        metrics.per_candidate[label].model_dump()
+                        if label in metrics.per_candidate
+                        else {}
+                    ),
+                    "interruption_penalty": score.penalty,
+                    "interruption_times": score.interruption_times,
+                },
             ),
         )
 

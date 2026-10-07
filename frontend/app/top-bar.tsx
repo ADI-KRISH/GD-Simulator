@@ -72,7 +72,9 @@ export function TopBar() {
         {loading ? null : user ? (
           <>
             {link("/", "Home")}
-            {user.role !== "candidate" && link("/sessions/new", "New GD")}
+            {link("/lobbies", "Lobbies")}
+            {link("/practice/new", "AI Practice")}
+            {link("/sessions/new", "New lobby")}
             {link("/history", "Performance")}
             {link(
               "/notifications",

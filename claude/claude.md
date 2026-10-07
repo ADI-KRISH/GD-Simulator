@@ -85,6 +85,10 @@ URL, a cloud account, or a managed service.
 
 - Do **not** add cloud provider SDKs, hosting configs, deploy pipelines,
   tunnels (ngrok/Cloudflare), or managed-service clients.
+- **One approved exception: ElevenLabs** (practice-mode TTS and Scribe STT), by
+  explicit product decision. It is called over plain HTTP from
+  `services/speech/tts.py` / `stt.py` behind the same thin interfaces, is optional
+  (no key = browser voices + Whisper/stub), and its key lives only in `.env`.
 - Do **not** add k8s manifests, Terraform, or CI deploy jobs.
 - Every service binds to `127.0.0.1` / `localhost`. Self-signed TLS only if a
   browser API forces it; plain HTTP otherwise.

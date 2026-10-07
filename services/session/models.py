@@ -90,6 +90,13 @@ class GDSession(Base):
         String(20), default=DEFAULT_RUBRIC_VERSION, nullable=False
     )
 
+    # "group" = students in a lobby; "solo" = one student vs AI personas. Both
+    # share every downstream table and the whole evaluation pipeline.
+    mode: Mapped[str] = mapped_column(String(10), default="group", nullable=False)
+    # Solo practice only: the AI personas in the room, [{label, name, persona,
+    # voice_id, style}]. Lives on the row so a restart can rebuild the room.
+    personas: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+
     state: Mapped[str] = mapped_column(
         String(20), default=SessionState.CREATED, index=True, nullable=False
     )
@@ -179,3 +186,34 @@ class SpeechEvent(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class Turn(Base):
+    """One tracked turn: who spoke, whom they interrupted, whom they replied to.
+
+    Written live as each speech event lands (humans and AI personas alike), so
+    interruptions and replies are queryable mid-session. The metrics engine still
+    recomputes from `speech_events` — this table is for live display, the
+    interruption penalty's evidence trail, and the evaluators' tools.
+    """
+
+    __tablename__ = "turns"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("gd_sessions.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    candidate_label: Mapped[str] = mapped_column(String(4), index=True, nullable=False)
+    start: Mapped[float] = mapped_column(Float, nullable=False)
+    end: Mapped[float] = mapped_column(Float, nullable=False)
+    # Set when this speaker started while someone else still held the floor.
+    interrupted_label: Mapped[str | None] = mapped_column(String(4), nullable=True)
+    # Set when this speaker followed another within the response window.
+    reply_to_label: Mapped[str | None] = mapped_column(String(4), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    @property
+    def is_interruption(self) -> bool:
+        return self.interrupted_label is not None

@@ -3,10 +3,9 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Query, status
 
-from services.auth.deps import CurrentUser, SessionDep, require_role
-from services.auth.models import Role
+from services.auth.deps import CurrentUser, SessionDep
 from services.common.config import settings
 from services.common.errors import ConflictError, PermissionDeniedError
 from services.realtime.hub import hub
@@ -27,14 +26,10 @@ from services.session.state import ParticipantState, SessionState
 
 router = APIRouter(prefix="/api/v1/sessions", tags=["sessions"])
 
-HostOrAdmin = Annotated[object, Depends(require_role(Role.HOST, Role.ADMIN))]
-
 
 @router.post("", response_model=SessionOut, status_code=status.HTTP_201_CREATED)
-async def create_session(
-    payload: SessionCreate, db: SessionDep, user: CurrentUser, _: HostOrAdmin
-) -> SessionOut:
-    """FR-03. Hosts and admins only."""
+async def create_session(payload: SessionCreate, db: SessionDep, user: CurrentUser) -> SessionOut:
+    """FR-03. Any signed-in user can open a lobby; a student creator takes seat A."""
     gd = await service.create_session(db, user, payload)
     return SessionOut.model_validate(gd)
 

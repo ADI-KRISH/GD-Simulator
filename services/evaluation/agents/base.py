@@ -16,7 +16,7 @@ Two structural guarantees:
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from services.common.contracts import (
@@ -27,6 +27,7 @@ from services.common.contracts import (
 )
 from services.evaluation.evidence import EvidencePacket, SharedContext
 from services.llm import LLMError, get_llm_provider
+from services.llm.base import LLMResult, ToolDefinition
 
 logger = logging.getLogger(__name__)
 
@@ -169,6 +170,42 @@ invent a candidate who is not listed above."""
         }
 
 
+TOOL_GUIDANCE = (
+    "\n\nTOOLS: you can look things up before you score. Use get_turns and "
+    "get_candidate_metrics for interruptions and replies, find_quotes and "
+    "get_transcript_range to verify a moment and quote it exactly. Every piece of "
+    "evidence you cite must be a time at which that candidate really spoke. "
+    "Interruptions are penalised by the system itself - do not lower your "
+    "dimension score for them a second time."
+)
+
+
+async def _complete(
+    provider,
+    agent: "EvaluatorAgent",
+    prompt: str,
+    schema: dict[str, Any],
+    tools: list[ToolDefinition] | None,
+) -> LLMResult:
+    """One model call: tool-using when evidence tools are supplied, else plain JSON."""
+    if tools:
+        return await provider.complete_with_tools(
+            system=agent.system_prompt() + TOOL_GUIDANCE,
+            prompt=prompt,
+            tools=tools,
+            schema=schema,
+        )
+    return await provider.complete_json(system=agent.system_prompt(), prompt=prompt, schema=schema)
+
+
+def _calls(result: LLMResult) -> list[dict[str, Any]]:
+    """Tool-call provenance, trimmed so the audit trail stays small."""
+    return [
+        {"name": c.name, "arguments": c.arguments, "result": str(c.result)[:400]}
+        for c in result.tool_calls
+    ]
+
+
 @dataclass(slots=True)
 class AgentRun:
     """Outcome of one agent on one candidate. Failure is a value, not an
@@ -180,6 +217,9 @@ class AgentRun:
     candidate_label: str
     output: EvaluationOutput | None
     error: str | None = None
+    # What the agent asked its tools and what the critic said (audit trail).
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    critic: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -187,7 +227,11 @@ class AgentRun:
 
 
 async def run_agent(
-    agent: EvaluatorAgent, context: SharedContext, packet: EvidencePacket
+    agent: EvaluatorAgent,
+    context: SharedContext,
+    packet: EvidencePacket,
+    tools: list[ToolDefinition] | None = None,
+    feedback: str = "",
 ) -> AgentRun:
     """Invoke one agent and validate its output against the contract.
 
@@ -196,10 +240,11 @@ async def run_agent(
     """
     provider = get_llm_provider()
     try:
-        result = await provider.complete_json(
-            system=agent.system_prompt(),
-            prompt=agent.user_prompt(context, packet),
-            schema=agent.response_schema(packet.candidate_label),
+        prompt = agent.user_prompt(context, packet)
+        if feedback:
+            prompt += f"\n\nREVIEWER FEEDBACK on your previous answer - fix this:\n{feedback}"
+        result = await _complete(
+            provider, agent, prompt, agent.response_schema(packet.candidate_label), tools
         )
         output = parse_agent_output(result.data)
     except (LLMError, ContractError) as exc:
@@ -239,6 +284,7 @@ async def run_agent(
         dimension=agent.dimension,
         candidate_label=packet.candidate_label,
         output=output,
+        tool_calls=_calls(result),
     )
 
 
@@ -276,7 +322,10 @@ def parse_batch_output(
 
 
 async def run_agent_batch(
-    agent: EvaluatorAgent, context: SharedContext, packets: dict[str, EvidencePacket]
+    agent: EvaluatorAgent,
+    context: SharedContext,
+    packets: dict[str, EvidencePacket],
+    tools: list[ToolDefinition] | None = None,
 ) -> list[AgentRun]:
     """Invoke one specialist once for every candidate (design §49).
 
@@ -289,10 +338,12 @@ async def run_agent_batch(
     provider = get_llm_provider()
 
     try:
-        result = await provider.complete_json(
-            system=agent.system_prompt(),
-            prompt=agent.batch_user_prompt(context, packets),
-            schema=agent.batch_response_schema(labels),
+        result = await _complete(
+            provider,
+            agent,
+            agent.batch_user_prompt(context, packets),
+            agent.batch_response_schema(labels),
+            tools,
         )
         outputs = parse_batch_output(agent, result.data, labels)
     except (LLMError, ContractError) as exc:
@@ -323,6 +374,7 @@ async def run_agent_batch(
             dimension=agent.dimension,
             candidate_label=label,
             output=by_label[label],
+            tool_calls=_calls(result),
         )
         for label in labels
     ]

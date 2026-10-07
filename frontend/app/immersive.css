@@ -1,0 +1,688 @@
+/*
+ * The Arena: the immersive layer for discussion rooms.
+ *
+ * Idea: a dark round table under a single lamp. People are orbs seated around
+ * it; whoever holds the floor swells and lights up in sodium amber, and the
+ * orb's size follows their actual voice level. Interruptions flash hot coral.
+ * Everything else stays quiet so the voices are the only thing that moves.
+ */
+
+:root {
+  --night: #070910;
+  --night-2: #0d1120;
+  --table: #151b2e;
+  --lamp: #ffb347;
+  --hot: #ff6b6b;
+  --mist: #9aa3bd;
+  --glass: rgb(255 255 255 / 0.05);
+  --glass-edge: rgb(255 255 255 / 0.1);
+}
+
+/* The arena takes the whole viewport under the top bar. */
+.shell:has(.arena) {
+  max-width: none;
+  padding: 0.75rem;
+}
+
+.arena {
+  position: relative;
+  min-height: calc(100vh - 5.2rem);
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  gap: 0.75rem;
+  padding: 1.1rem 1.3rem 1.2rem;
+  border-radius: 28px;
+  overflow: hidden;
+  color: #eef0f8;
+  background:
+    radial-gradient(900px 520px at 50% 42%, rgb(255 179 71 / 0.09), transparent 62%),
+    radial-gradient(700px 400px at 12% 0%, rgb(90 80 220 / 0.18), transparent 70%),
+    linear-gradient(180deg, var(--night-2), var(--night));
+  border: 1px solid var(--glass-edge);
+}
+
+.arena a {
+  color: inherit;
+}
+
+/* ---- header ---------------------------------------------------------- */
+
+.arena-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.2rem;
+  flex-wrap: wrap;
+}
+
+.arena-topic {
+  flex: 1 1 22rem;
+  min-width: 0;
+}
+
+.arena-topic h1 {
+  margin: 0.25rem 0 0;
+  font-size: clamp(1.15rem, 2.3vw, 1.7rem);
+  line-height: 1.2;
+  font-weight: 650;
+  max-width: 46ch;
+}
+
+.arena-phase {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.78rem;
+  color: var(--mist);
+}
+
+.arena-phase i {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--mist);
+}
+
+.arena-phase--live i {
+  background: var(--hot);
+  box-shadow: 0 0 0 0 rgb(255 107 107 / 0.6);
+  animation: arena-live 1.6s infinite;
+}
+
+@keyframes arena-live {
+  70% {
+    box-shadow: 0 0 0 9px rgb(255 107 107 / 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgb(255 107 107 / 0);
+  }
+}
+
+/* Circular countdown. */
+.ring-clock {
+  position: relative;
+  width: 5.2rem;
+  height: 5.2rem;
+  flex: none;
+}
+
+.ring-clock svg {
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+}
+
+.ring-clock circle {
+  fill: none;
+  stroke-width: 5;
+}
+
+.ring-clock .track {
+  stroke: var(--glass-edge);
+}
+
+.ring-clock .fill {
+  stroke: var(--lamp);
+  stroke-linecap: round;
+  transition: stroke-dashoffset 1s linear;
+}
+
+.ring-clock--warn .fill {
+  stroke: var(--hot);
+}
+
+.ring-clock span {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-variant-numeric: tabular-nums;
+  font-size: 1.1rem;
+  font-weight: 650;
+}
+
+/* ---- round table ------------------------------------------------------ */
+
+.table {
+  position: relative;
+  min-height: 26rem;
+  width: 100%;
+  max-width: 62rem;
+  margin: 0 auto;
+}
+
+.table::before {
+  content: "";
+  position: absolute;
+  left: 12%;
+  right: 12%;
+  top: 16%;
+  bottom: 16%;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgb(255 179 71 / 0.1), var(--table) 70%);
+  border: 1px solid rgb(255 255 255 / 0.07);
+  box-shadow: inset 0 0 80px rgb(0 0 0 / 0.5);
+}
+
+.table-centre {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(20rem, 38%);
+  text-align: center;
+  pointer-events: none;
+}
+
+.table-centre p {
+  margin: 0;
+  color: var(--mist);
+  font-size: 0.9rem;
+}
+
+.table-centre .caption-now {
+  color: #f6f1e7;
+  font-size: clamp(0.95rem, 1.6vw, 1.15rem);
+  line-height: 1.4;
+}
+
+.table-centre .caption-who {
+  color: var(--lamp);
+  font-size: 0.82rem;
+  margin-bottom: 0.3rem;
+}
+
+.seat {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  display: grid;
+  justify-items: center;
+  gap: 0.35rem;
+  width: 8.5rem;
+  text-align: center;
+}
+
+.seat-name {
+  font-weight: 600;
+  font-size: 0.88rem;
+}
+
+.seat-sub {
+  color: var(--mist);
+  font-size: 0.74rem;
+  min-height: 1.1em;
+}
+
+.seat--speaking .seat-sub {
+  color: var(--lamp);
+}
+
+.seat--away {
+  opacity: 0.45;
+}
+
+/* ---- orb --------------------------------------------------------------- */
+
+.orb {
+  --lvl: 0;
+  --size: 5.4rem;
+  position: relative;
+  width: var(--size);
+  height: var(--size);
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 1.6rem;
+  font-weight: 700;
+  color: #fff;
+  background:
+    radial-gradient(circle at 32% 28%, hsl(var(--h) 90% 78% / 0.95), transparent 46%),
+    radial-gradient(circle at 50% 60%, hsl(var(--h) 70% 52%), hsl(var(--h) 60% 22%) 80%);
+  box-shadow:
+    0 0 calc(10px + var(--lvl) * 56px) hsl(var(--h) 95% 60% / calc(0.25 + var(--lvl) * 0.5)),
+    inset 0 -8px 18px rgb(0 0 0 / 0.35);
+  transform: scale(calc(1 + var(--lvl) * 0.2));
+  transition:
+    transform 90ms ease-out,
+    box-shadow 120ms ease-out;
+}
+
+.orb--you {
+  --size: 6rem;
+}
+
+.orb::before,
+.orb::after {
+  content: "";
+  position: absolute;
+  inset: -6px;
+  border-radius: 50%;
+  border: 2px solid var(--lamp);
+  opacity: 0;
+}
+
+.seat--speaking .orb {
+  box-shadow:
+    0 0 calc(24px + var(--lvl) * 60px) rgb(255 179 71 / calc(0.45 + var(--lvl) * 0.4)),
+    inset 0 -8px 18px rgb(0 0 0 / 0.35);
+}
+
+.seat--speaking .orb::before {
+  animation: orb-ring 1.8s ease-out infinite;
+}
+
+.seat--speaking .orb::after {
+  animation: orb-ring 1.8s ease-out 0.9s infinite;
+}
+
+@keyframes orb-ring {
+  from {
+    opacity: 0.7;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.55);
+  }
+}
+
+.orb-badge {
+  position: absolute;
+  right: -0.2rem;
+  bottom: 0.1rem;
+  font-size: 0.62rem;
+  font-weight: 700;
+  padding: 0.1rem 0.4rem;
+  border-radius: 999px;
+  background: var(--night);
+  border: 1px solid var(--glass-edge);
+  color: var(--mist);
+}
+
+.orb-strike {
+  position: absolute;
+  top: -0.3rem;
+  right: -0.5rem;
+  min-width: 1.5rem;
+  height: 1.5rem;
+  padding: 0 0.35rem;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  font-size: 0.72rem;
+  font-weight: 700;
+  background: var(--hot);
+  color: #2b0a0a;
+}
+
+/* ---- notices (interruptions / replies) ------------------------------- */
+
+.notices {
+  position: absolute;
+  right: 1.2rem;
+  top: 7.4rem;
+  display: grid;
+  gap: 0.5rem;
+  width: min(19rem, 70vw);
+  z-index: 3;
+  pointer-events: none;
+}
+
+.notice {
+  padding: 0.55rem 0.8rem;
+  border-radius: 12px;
+  background: var(--glass);
+  border: 1px solid var(--glass-edge);
+  backdrop-filter: blur(10px);
+  font-size: 0.84rem;
+  animation: notice-in 260ms ease-out both;
+}
+
+.notice--interruption {
+  border-color: rgb(255 107 107 / 0.55);
+  background: rgb(255 107 107 / 0.14);
+}
+
+.notice small {
+  display: block;
+  color: var(--mist);
+}
+
+@keyframes notice-in {
+  from {
+    opacity: 0;
+    transform: translateX(14px);
+  }
+}
+
+/* ---- footer / controls ------------------------------------------------- */
+
+.arena-foot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.8rem;
+  flex-wrap: wrap;
+}
+
+.arena-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.7rem 1.3rem;
+  border-radius: 999px;
+  border: 1px solid var(--glass-edge);
+  background: var(--glass);
+  color: #eef0f8;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.arena-btn:hover {
+  background: rgb(255 255 255 / 0.1);
+}
+
+.arena-btn--primary {
+  background: var(--lamp);
+  border-color: var(--lamp);
+  color: #2a1a02;
+}
+
+.arena-btn--primary:hover {
+  background: #ffc069;
+}
+
+.arena-btn--danger {
+  background: rgb(255 107 107 / 0.15);
+  border-color: rgb(255 107 107 / 0.5);
+  color: #ffc9c9;
+}
+
+.arena-btn:focus-visible,
+.pick:focus-visible {
+  outline: 3px solid #fff;
+  outline-offset: 2px;
+}
+
+.arena-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.mic-meter {
+  width: 7rem;
+  height: 0.4rem;
+  border-radius: 999px;
+  background: var(--glass-edge);
+  overflow: hidden;
+}
+
+.mic-meter span {
+  display: block;
+  height: 100%;
+  width: calc(var(--lvl, 0) * 100%);
+  background: var(--lamp);
+  transition: width 80ms linear;
+}
+
+.arena-hint {
+  color: var(--mist);
+  font-size: 0.82rem;
+  max-width: 40rem;
+  text-align: center;
+  margin: 0;
+}
+
+/* Captions drawer under the table. */
+.captions {
+  max-width: 46rem;
+  margin: 0 auto;
+  width: 100%;
+  max-height: 9rem;
+  overflow-y: auto;
+  display: grid;
+  gap: 0.3rem;
+  font-size: 0.86rem;
+  color: var(--mist);
+}
+
+.captions b {
+  color: #eef0f8;
+  font-weight: 600;
+}
+
+/* ---- pre-session screens ------------------------------------------------ */
+
+.arena-card {
+  max-width: 44rem;
+  margin: 0 auto;
+  width: 100%;
+  padding: 1.4rem;
+  border-radius: 20px;
+  background: var(--glass);
+  border: 1px solid var(--glass-edge);
+}
+
+.arena-card label {
+  color: var(--mist);
+}
+
+.arena-card input,
+.arena-card textarea,
+.arena-card select {
+  background: rgb(0 0 0 / 0.3);
+  border-color: var(--glass-edge);
+  color: #eef0f8;
+}
+
+.picks {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(12.5rem, 1fr));
+  gap: 0.7rem;
+}
+
+.pick {
+  display: grid;
+  gap: 0.5rem;
+  justify-items: start;
+  text-align: left;
+  padding: 0.9rem;
+  border-radius: 16px;
+  background: var(--glass);
+  border: 1px solid var(--glass-edge);
+  color: #eef0f8;
+  cursor: pointer;
+}
+
+.pick[aria-pressed="true"] {
+  border-color: var(--lamp);
+  background: rgb(255 179 71 / 0.1);
+}
+
+.pick .orb {
+  --size: 2.8rem;
+  font-size: 1rem;
+  transform: none;
+}
+
+.pick small {
+  color: var(--mist);
+  line-height: 1.35;
+}
+
+/* ---- mode picker on the home page --------------------------------------- */
+
+.modes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+  gap: 1rem;
+}
+
+.mode {
+  position: relative;
+  display: grid;
+  gap: 0.6rem;
+  align-content: end;
+  min-height: 13rem;
+  padding: 1.4rem;
+  border-radius: 24px;
+  overflow: hidden;
+  color: #eef0f8;
+  text-decoration: none;
+  background:
+    radial-gradient(260px 200px at 85% 15%, hsl(var(--h) 90% 60% / 0.45), transparent 70%),
+    linear-gradient(180deg, var(--night-2), var(--night));
+  border: 1px solid var(--glass-edge);
+  transition: transform 160ms ease, border-color 160ms ease;
+}
+
+.mode:hover {
+  transform: translateY(-3px);
+  border-color: hsl(var(--h) 90% 65% / 0.7);
+  text-decoration: none;
+}
+
+.mode h2 {
+  margin: 0;
+  font-size: 1.4rem;
+}
+
+.mode p {
+  margin: 0;
+  color: var(--mist);
+  max-width: 32ch;
+}
+
+.mode .orb {
+  position: absolute;
+  right: 1.4rem;
+  top: 1.2rem;
+  --size: 4rem;
+  transform: none;
+}
+
+/* ---- small screens / reduced motion ------------------------------------- */
+
+@media (max-width: 720px) {
+  .table {
+    min-height: 34rem;
+  }
+  .seat {
+    width: 6.5rem;
+  }
+  .orb {
+    --size: 4.2rem;
+  }
+  .orb--you {
+    --size: 4.8rem;
+  }
+  .notices {
+    top: auto;
+    bottom: 5.5rem;
+    right: 0.8rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .orb,
+  .notice,
+  .mode {
+    transition: none;
+    animation: none;
+  }
+  .seat--speaking .orb::before,
+  .seat--speaking .orb::after,
+  .arena-phase--live i {
+    animation: none;
+  }
+  .seat--speaking .orb::before {
+    opacity: 0.6;
+  }
+}
+
+/* ---- lobby browser -------------------------------------------------------- */
+
+.lobby-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(19rem, 1fr));
+  gap: 0.9rem;
+}
+
+.lobby-card {
+  display: grid;
+  gap: 0.7rem;
+  padding: 1.1rem;
+  border-radius: 18px;
+  background: var(--glass);
+  border: 1px solid var(--glass-edge);
+}
+
+.lobby-topic {
+  font-size: 1.05rem;
+  line-height: 1.35;
+}
+
+.seats {
+  display: inline-flex;
+  gap: 0.3rem;
+}
+
+.seats i {
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 50%;
+  border: 1px solid var(--mist);
+}
+
+.seats i.seats-on {
+  background: var(--lamp);
+  border-color: var(--lamp);
+}
+
+/* ---- video strip + drawer in the multiplayer room ------------------------ */
+
+.video-strip {
+  display: flex;
+  gap: 0.7rem;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.video-self {
+  position: relative;
+  width: 11rem;
+}
+
+.video-self .meta {
+  position: absolute;
+  left: 0.5rem;
+  bottom: 0.3rem;
+  color: #fff;
+}
+
+.video-remote {
+  display: flex;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+}
+
+.video-strip video {
+  border-radius: 14px;
+  background: #000;
+  width: 100%;
+  max-width: 14rem;
+}
+
+.arena-drawer {
+  max-width: 62rem;
+  margin: 0 auto;
+  width: 100%;
+  color: var(--mist);
+}
+
+.arena-drawer summary {
+  cursor: pointer;
+  text-align: center;
+  margin-bottom: 0.7rem;
+}

@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import { AuthProvider } from "@/lib/auth-context";
 import { TopBar } from "./top-bar";
 import "./globals.css";
+import "./immersive.css";
 
 export const metadata: Metadata = {
   title: "GD Platform",

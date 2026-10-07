@@ -54,6 +54,7 @@ from services.evaluation.supervisor import (
     resolve,
 )
 from services.evaluation.synthesis import Synthesis, synthesise
+from services.evaluation.tools import TurnRecord, audit_evidence, build_evidence_tools
 from services.metrics.engine import SessionMetrics
 
 logger = logging.getLogger(__name__)
@@ -78,6 +79,9 @@ class EvaluationState(TypedDict, total=False):
     rolling_state: RollingState
     weights: dict[str, float]
     strategy: str
+    # Tracked turns and each candidate's interruption times (both modes).
+    turns: list[TurnRecord]
+    interruptions: dict[str, list[float]]
 
     # Produced by `plan`.
     agent_names: list[str]
@@ -86,6 +90,8 @@ class EvaluationState(TypedDict, total=False):
 
     # Merged from the parallel evaluate branches.
     runs: Annotated[list[AgentRun], operator.add]
+    # Critic verdicts: "agent/candidate" -> problems found (empty = passed).
+    critic_notes: dict[str, list[str]]
 
     # Produced downstream.
     outputs_by_candidate: dict[str, list[EvaluationOutput]]
@@ -158,11 +164,20 @@ async def evaluate_node(state: dict[str, Any]) -> dict[str, Any]:
     packets = state["packets"]
     target = state.get("target")
 
+    tools = _tools(state)
+
     if target is None:
-        runs = await run_agent_batch(agent, state["context"], packets)
+        runs = await run_agent_batch(agent, state["context"], packets, tools)
     else:
-        runs = [await run_agent(agent, state["context"], packets[target])]
+        runs = [await run_agent(agent, state["context"], packets[target], tools)]
     return {"runs": runs}
+
+
+def _tools(state: dict[str, Any]):
+    """Evidence tools for the specialists, unless agentic evaluation is switched off."""
+    if not settings.evaluation_agentic:
+        return None
+    return build_evidence_tools(state["segments"], state["metrics"], state.get("turns") or [])
 
 
 def collect_node(state: EvaluationState) -> dict[str, Any]:
@@ -186,13 +201,67 @@ def collect_node(state: EvaluationState) -> dict[str, Any]:
     }
 
 
+def critic_node(state: EvaluationState) -> dict[str, Any]:
+    """Audit every verdict's evidence against the transcript. Deterministic: the
+    critic never re-scores, it only says whether a verdict is supported."""
+    notes: dict[str, list[str]] = {}
+    for run in state["runs"]:
+        if run.output is None:
+            continue
+        issues = audit_evidence(run.output, state["segments"])
+        run.critic = issues
+        if issues:
+            notes[f"{run.agent}/{run.candidate_label}"] = issues
+    return {"critic_notes": notes}
+
+
+def needs_revision(state: EvaluationState) -> str:
+    """One revision round at most: the critic's verdict is only acted on once."""
+    if state.get("critic_notes") and settings.evaluation_agentic:
+        return "revise"
+    return "aggregate"
+
+
+async def revise_node(state: EvaluationState) -> dict[str, Any]:
+    """Send each flagged verdict back to its specialist with the critic's reasons.
+
+    The revised answer replaces the original only if it parses; a failed revision
+    keeps the original so the critic can never delete a score.
+    """
+    tools = _tools(state)
+    outputs = {k: list(v) for k, v in state["outputs_by_candidate"].items()}
+    new_runs: list[AgentRun] = []
+    for key, issues in state["critic_notes"].items():
+        agent_name, label = key.split("/", 1)
+        agent = ALL_AGENTS[agent_name]
+        run = await run_agent(
+            agent,
+            state["context"],
+            state["packets"][label],
+            tools,
+            feedback="; ".join(issues),
+        )
+        run.critic = [f"revised after critic: {'; '.join(issues)}"]
+        if run.output is None:
+            continue
+        outputs[label] = [
+            run.output if o.dimension == agent.dimension else o for o in outputs.get(label, [])
+        ]
+        new_runs.append(run)
+    return {"outputs_by_candidate": outputs, "runs": new_runs}
+
+
 def aggregate_node(state: EvaluationState) -> dict[str, Any]:
     """Design §31. A node, but not an agent — no model runs here.
 
     This is the boundary the whole system is built around: everything before it
     is inference, everything from here is arithmetic (claude.md invariant 5).
     """
-    return {"scores": aggregate_session(state["outputs_by_candidate"], state["weights"])}
+    return {
+        "scores": aggregate_session(
+            state["outputs_by_candidate"], state["weights"], state.get("interruptions")
+        )
+    }
 
 
 def fan_out_synthesis(state: EvaluationState) -> list[Send]:
@@ -223,7 +292,7 @@ def has_any_output(state: EvaluationState) -> str:
     empty scores and raises, rather than the graph inventing a report.
     """
     if any(state["outputs_by_candidate"].values()):
-        return "aggregate"
+        return "critic"
     return END
 
 
@@ -244,13 +313,17 @@ def build_graph(checkpointer: Any | None = None):
     graph.add_node("plan", plan_node)
     graph.add_node("evaluate", evaluate_node)
     graph.add_node("collect", collect_node)
+    graph.add_node("critic", critic_node)
+    graph.add_node("revise", revise_node)
     graph.add_node("aggregate", aggregate_node)
     graph.add_node("synthesise", synthesise_node)
 
     graph.add_edge(START, "plan")
     graph.add_conditional_edges("plan", fan_out, ["evaluate"])
     graph.add_edge("evaluate", "collect")
-    graph.add_conditional_edges("collect", has_any_output, ["aggregate", END])
+    graph.add_conditional_edges("collect", has_any_output, ["critic", END])
+    graph.add_conditional_edges("critic", needs_revision, ["revise", "aggregate"])
+    graph.add_edge("revise", "aggregate")
     graph.add_conditional_edges("aggregate", fan_out_synthesis, ["synthesise"])
     graph.add_edge("synthesise", END)
 
@@ -300,6 +373,8 @@ async def run_graph(
     strategy: str | None = None,
     attempt: int = 1,
     evaluation_version: int = 1,
+    turns: list[TurnRecord] | None = None,
+    interruptions: dict[str, list[float]] | None = None,
 ) -> EvaluationState:
     """Run one evaluation through the graph and return the final state.
 
@@ -326,6 +401,8 @@ async def run_graph(
         "rolling_state": rolling_state,
         "weights": weights,
         "strategy": strategy or settings.evaluation_strategy,
+        "turns": turns or [],
+        "interruptions": interruptions or {},
         "runs": [],
         "syntheses": [],
     }

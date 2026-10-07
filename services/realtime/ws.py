@@ -204,7 +204,10 @@ async def session_socket(
                     end = max(session_service.elapsed_discussion_seconds(gd), speaking_since)
                     # Persisted immediately — the metrics engine computes
                     # speaking time from these rows, never from an estimate.
-                    await session_service.record_speech(db, gd, label, speaking_since, end)
+                    _, changed = await session_service.record_speech_tracked(
+                        db, gd, label, speaking_since, end
+                    )
+                    interrupts = await session_service.interruption_times(db, session_id)
                     await db.commit()
                 await hub.broadcast(
                     str(session_id),
@@ -214,6 +217,7 @@ async def session_socket(
                         {"candidate_label": label, "start": speaking_since, "end": end},
                     ),
                 )
+                await broadcast_turns(str(session_id), changed, interrupts)
                 speaking_since = None
                 continue
 
@@ -234,6 +238,30 @@ async def session_socket(
         # a second tab closing must not report them as gone.
         if not is_observer and not hub.is_connected(str(session_id), str(user_id)):
             await _record_disconnect(factory, session_id, user_id, label)
+
+
+async def broadcast_turns(session_id: str, turns, interrupts: dict[str, list[float]]) -> None:
+    """Tell the room about every turn that changed, with the running penalty."""
+    from services.evaluation.aggregator import interruption_penalty
+
+    for turn in turns:
+        made = len(interrupts.get(turn.candidate_label, []))
+        await hub.broadcast(
+            session_id,
+            server_frame(
+                ServerEvent.TURN_RECORDED,
+                session_id,
+                {
+                    "candidate_label": turn.candidate_label,
+                    "start": turn.start,
+                    "end": turn.end,
+                    "interrupted": turn.interrupted_label,
+                    "reply_to": turn.reply_to_label,
+                    "interruptions": made,
+                    "penalty": interruption_penalty(made),
+                },
+            ),
+        )
 
 
 async def _record_disconnect(

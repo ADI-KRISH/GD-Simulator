@@ -53,6 +53,9 @@ class CandidateReport:
     # synthesis agent from the dimension verdicts. Empty when it was
     # unavailable — the rest of the report stands on its own.
     synthesis: dict = field(default_factory=dict)
+    # Points deducted for interrupting, and when each interruption happened.
+    penalty: float = 0.0
+    interruption_times: list[float] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -164,6 +167,11 @@ def build_candidate_report(
         feedback_parts.append("What worked: " + "; ".join(strengths[:3]) + ".")
     if weaknesses:
         feedback_parts.append("What to work on: " + "; ".join(weaknesses[:3]) + ".")
+    if score.penalty:
+        feedback_parts.append(
+            f"Interrupting cost you {score.penalty:g} points "
+            f"({score.interruptions} interruption{'s' if score.interruptions != 1 else ''})."
+        )
     feedback_parts.extend(observations)
 
     return CandidateReport(
@@ -179,6 +187,8 @@ def build_candidate_report(
         needs_human_review=score.needs_human_review,
         review_reasons=score.review_reasons,
         synthesis=synthesis or {},
+        penalty=score.penalty,
+        interruption_times=score.interruption_times,
     )
 
 

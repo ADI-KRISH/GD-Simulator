@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
@@ -20,16 +21,20 @@ class SessionCreate(BaseModel):
     topic_category: str = Field(default="general", max_length=100)
     gd_type: GDType = GDType.GENERAL
     difficulty: Difficulty = Difficulty.INTERMEDIATE
-    min_participants: int = Field(default=3, ge=2, le=20)
-    max_participants: int = Field(default=8, ge=2, le=20)
+    min_participants: int = Field(default=3, ge=1, le=20)
+    max_participants: int = Field(default=8, ge=1, le=20)
     duration_seconds: int = Field(default=900, ge=60, le=7200)
     preparation_seconds: int = Field(default=120, ge=0, le=1800)
     video_required: bool = True
     recording_enabled: bool = False
     rubric_weights: dict[str, float] | None = None
+    mode: Literal["group", "solo"] = "group"
+    personas: list[dict] = Field(default_factory=list, max_length=4)
 
     @model_validator(mode="after")
     def check_capacity(self) -> "SessionCreate":
+        if self.mode == "group" and self.min_participants < 2:
+            raise ValueError("a group discussion needs at least 2 participants")
         if self.min_participants > self.max_participants:
             raise ValueError("min_participants cannot exceed max_participants")
         return self
@@ -95,6 +100,7 @@ class SessionOut(BaseModel):
     recording_enabled: bool
     rubric_weights: dict[str, float]
     rubric_version: str
+    mode: str = "group"
     state: SessionState
     started_at: datetime | None
     ended_at: datetime | None
@@ -178,3 +184,29 @@ class MediaToken(BaseModel):
     token: str
     room: str
     identity: str
+
+
+class LobbyListItem(BaseModel):
+    """One open lobby in the public browser."""
+
+    session_id: uuid.UUID
+    code: str
+    topic: str
+    topic_category: str
+    gd_type: GDType
+    difficulty: Difficulty
+    host_name: str
+    occupancy: int
+    capacity: int
+    duration_seconds: int
+    preparation_seconds: int
+
+
+class TurnOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    candidate_label: str
+    start: float
+    end: float
+    interrupted_label: str | None
+    reply_to_label: str | None

@@ -7,8 +7,9 @@ records that could disagree.
 """
 
 import uuid
+from typing import Annotated
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Query, status
 
 from services.auth.deps import CurrentUser, SessionDep
 from services.realtime.hub import hub
@@ -17,12 +18,24 @@ from services.session import service
 from services.session.schemas import (
     InviteRequest,
     JoinRequest,
+    LobbyListItem,
     LobbyView,
     ParticipantOut,
     ReadyRequest,
 )
 
 router = APIRouter(prefix="/api/v1/lobbies", tags=["lobby"])
+
+
+@router.get("", response_model=list[LobbyListItem])
+async def browse_lobbies(
+    db: SessionDep,
+    user: CurrentUser,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> list[LobbyListItem]:
+    """Open group lobbies any student can join."""
+    return await service.list_open_lobbies(db, limit, offset)
 
 
 @router.post("/join", response_model=LobbyView)

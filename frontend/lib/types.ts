@@ -52,6 +52,7 @@ export interface Participant {
 }
 
 export interface GDSession {
+  mode?: "group" | "solo";
   id: string;
   code: string;
   host_id: string;
@@ -244,6 +245,40 @@ export interface CandidateReportBody {
   // Absent on reports stored before the synthesis agent existed, so this is
   // optional in the type as well as in practice.
   synthesis?: SynthesisBody | Record<string, never>;
+  /** Points deducted for interrupting, and when each interruption happened (s). */
+  penalty?: number;
+  interruption_times?: number[];
+}
+
+/** One open lobby in the public browser. */
+export interface LobbyListItem {
+  session_id: string;
+  code: string;
+  topic: string;
+  topic_category: string;
+  gd_type: GDType;
+  difficulty: Difficulty;
+  host_name: string;
+  occupancy: number;
+  capacity: number;
+  duration_seconds: number;
+  preparation_seconds: number;
+}
+
+export interface PersonaPreset {
+  key: string;
+  name: string;
+  tagline: string;
+  brief: string;
+  voice_id: string;
+  eagerness: number;
+}
+
+export interface PersonaChoice {
+  preset?: string;
+  name?: string;
+  persona?: string;
+  voice_id?: string;
 }
 
 /** Design §34. */

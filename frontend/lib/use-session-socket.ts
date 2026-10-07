@@ -31,15 +31,26 @@ export type ServerEventType =
   | "STATE_SNAPSHOT"
   | "TOPIC_RELEASED"
   | "TRANSCRIPT_APPENDED"
+  | "TURN_RECORDED"
   | "METRICS_UPDATED"
   | "EVALUATION_COMPLETED"
   | "ERROR";
 
 export interface Frame {
-  type: ServerEventType;
+  // Practice mode adds its own frame names on top of the shared ones.
+  type: ServerEventType | (string & {});
   session_id: string;
   payload: Record<string, unknown>;
   at: string;
+}
+
+/** A tracked turn worth telling the room about: an interruption or a direct reply. */
+export interface TurnNotice {
+  id: number;
+  kind: "interruption" | "reply";
+  by: string;
+  target: string;
+  penalty: number;
 }
 
 export interface SocketState {
@@ -53,9 +64,15 @@ export interface SocketState {
   events: Frame[];
   error: string | null;
   evaluationReady: boolean;
+  /** Running interruption count and score penalty per candidate label. */
+  penalties: Record<string, { interruptions: number; penalty: number }>;
+  /** Most recent notices first; the UI shows them briefly as toasts. */
+  notices: TurnNotice[];
 }
 
-const INITIAL: SocketState = {
+let noticeSeq = 0;
+
+export const INITIAL: SocketState = {
   connected: false,
   lobby: null,
   timer: null,
@@ -66,6 +83,8 @@ const INITIAL: SocketState = {
   events: [],
   error: null,
   evaluationReady: false,
+  penalties: {},
+  notices: [],
 };
 
 // Keep the visible log short — it is a debug aid, not a transcript.
@@ -152,7 +171,7 @@ export function useSessionSocket(sessionId: string | null) {
   return { ...state, setReady, speechStarted, speechStopped, send };
 }
 
-function apply(prev: SocketState, frame: Frame): SocketState {
+export function apply(prev: SocketState, frame: Frame): SocketState {
   const events = [frame, ...prev.events].slice(0, MAX_EVENTS);
   const label = frame.payload.candidate_label as string | undefined;
 
@@ -193,6 +212,30 @@ function apply(prev: SocketState, frame: Frame): SocketState {
       };
     case "SPEECH_STOPPED":
       return { ...prev, events, speaking: prev.speaking.filter((s) => s !== label) };
+    case "TURN_RECORDED": {
+      const p = frame.payload as {
+        candidate_label: string;
+        interrupted: string | null;
+        reply_to: string | null;
+        interruptions: number;
+        penalty: number;
+      };
+      const penalties = {
+        ...prev.penalties,
+        [p.candidate_label]: { interruptions: p.interruptions, penalty: p.penalty },
+      };
+      const notice: TurnNotice | null = p.interrupted
+        ? { id: ++noticeSeq, kind: "interruption", by: p.candidate_label, target: p.interrupted, penalty: p.penalty }
+        : p.reply_to
+          ? { id: ++noticeSeq, kind: "reply", by: p.candidate_label, target: p.reply_to, penalty: p.penalty }
+          : null;
+      return {
+        ...prev,
+        events,
+        penalties,
+        notices: notice ? [notice, ...prev.notices].slice(0, 6) : prev.notices,
+      };
+    }
     case "ERROR":
       return { ...prev, events, error: (frame.payload.message as string) ?? "error" };
     default:

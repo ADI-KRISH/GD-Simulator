@@ -28,6 +28,7 @@ from services.lobby.router import router as lobby_router
 from services.metrics.router import router as metrics_router
 from services.notifications.router import router as notifications_router
 from services.observer.service import run_observer_loop
+from services.practice.router import router as practice_router
 from services.realtime.timer import run_ticker
 from services.realtime.ws import router as realtime_router
 from services.session.router import router as session_router
@@ -119,3 +120,4 @@ app.include_router(evaluation_router)
 app.include_router(notifications_router)
 app.include_router(realtime_router)
 app.include_router(simulation_router)
+app.include_router(practice_router)

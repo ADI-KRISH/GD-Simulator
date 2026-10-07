@@ -99,6 +99,50 @@ class StubSTT:
         return Transcription(utterances=utterances, language=language or "en")
 
 
+class ElevenLabsSTT:
+    """ElevenLabs Scribe over HTTP: one short utterance in, its text out.
+
+    Used for practice mode, where the browser cuts speech into utterances with
+    voice-activity detection and each one is transcribed as it ends.
+    """
+
+    name = "elevenlabs"
+
+    def __init__(self, api_key: str, model: str, base_url: str) -> None:
+        self._key = api_key
+        self._model = model
+        self._base = base_url.rstrip("/")
+
+    async def transcribe(self, audio: bytes, *, language: str | None = None) -> Transcription:
+        import httpx
+
+        data = {"model_id": self._model}
+        if language:
+            data["language_code"] = language
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    f"{self._base}/v1/speech-to-text",
+                    headers={"xi-api-key": self._key},
+                    data=data,
+                    files={"file": ("utterance.wav", audio, "audio/wav")},
+                )
+            response.raise_for_status()
+            body = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise RuntimeError(f"ElevenLabs STT failed: {exc}") from exc
+
+        text = str(body.get("text", "")).strip()
+        if not text:
+            return Transcription(utterances=[], language=body.get("language_code") or "en")
+        words = body.get("words") or []
+        end = float(words[-1].get("end", 0.0)) if words else 0.0
+        return Transcription(
+            utterances=[Utterance(start=0.0, end=end, text=text, confidence=0.9)],
+            language=body.get("language_code") or "en",
+        )
+
+
 class WhisperSTT:
     """Local Whisper via faster-whisper (design §54: "Whisper, run locally").
 
@@ -196,7 +240,11 @@ def get_stt_provider() -> STTProvider:
         return _provider
 
     choice = (settings.stt_provider or "auto").lower()
-    if choice == "stub":
+    if choice == "elevenlabs" or (choice == "auto" and settings.elevenlabs_api_key):
+        _provider = ElevenLabsSTT(
+            settings.elevenlabs_api_key, settings.elevenlabs_stt_model, settings.elevenlabs_base_url
+        )
+    elif choice == "stub":
         _provider = StubSTT()
     elif choice == "whisper":
         _provider = WhisperSTT(model_size=settings.whisper_model)

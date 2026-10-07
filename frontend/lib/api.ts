@@ -4,6 +4,7 @@ import type {
   GDSession,
   GDType,
   HistoryOut,
+  LobbyListItem,
   LobbyView,
   MediaToken,
   MetricsOut,
@@ -19,6 +20,8 @@ import type {
   GroupReportBody,
   NotificationItem,
   NotificationList,
+  PersonaChoice,
+  PersonaPreset,
 } from "./types";
 
 export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -270,7 +273,26 @@ export const sessions = {
     request<LobbyView>(`/api/v1/sessions/${id}/agents`, { method: "POST", body, auth: true }),
 };
 
+export const practice = {
+  personas: () =>
+    request<{ personas: PersonaPreset[]; voice: "elevenlabs" | "browser" }>(
+      "/api/v1/practice/personas",
+      { auth: true },
+    ),
+
+  create: (body: {
+    topic: string;
+    gd_type?: GDType;
+    difficulty?: string;
+    duration_seconds?: number;
+    preparation_seconds?: number;
+    personas: PersonaChoice[];
+  }) => request<GDSession>("/api/v1/practice", { method: "POST", body, auth: true }),
+};
+
 export const lobbies = {
+  browse: () => request<LobbyListItem[]>("/api/v1/lobbies", { auth: true }),
+
   join: (code: string) =>
     request<LobbyView>("/api/v1/lobbies/join", {
       method: "POST",

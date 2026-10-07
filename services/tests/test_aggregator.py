@@ -170,3 +170,14 @@ def test_normalise_weights_scales_to_one():
 def test_normalise_weights_rejects_a_degenerate_rubric():
     with pytest.raises(ValueError):
         normalise_weights({"content": 0.0})
+
+
+def test_interruptions_cost_points_up_to_a_cap():
+    """Penalty is arithmetic on the count: linear, capped, never below zero."""
+    outputs = [output(d, 8.0) for d in WEIGHTS]  # 80/100 before any penalty
+    clean = aggregate_candidate("A", outputs, WEIGHTS)
+    rude = aggregate_candidate("A", outputs, WEIGHTS, [10.0, 20.0, 30.0])
+    assert clean.penalty == 0 and clean.overall == pytest.approx(80.0)
+    assert rude.interruptions == 3 and rude.penalty == pytest.approx(6.0)
+    assert rude.overall == pytest.approx(74.0)
+    assert aggregate_candidate("A", outputs, WEIGHTS, list(range(50))).penalty == 15.0

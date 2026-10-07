@@ -6,12 +6,14 @@ from httpx import AsyncClient
 from services.realtime.livekit import decode_access_token
 
 
-async def test_only_hosts_can_create_sessions(
+async def test_students_can_create_lobbies_and_take_seat_a(
     client: AsyncClient, candidate_auth: dict, session_payload: dict
 ):
-    """FR-03 is host/admin only (NFR-06 RBAC)."""
+    """Any student can open a lobby; they sit in it as candidate A."""
     response = await client.post("/api/v1/sessions", json=session_payload, headers=candidate_auth)
-    assert response.status_code == 403
+    assert response.status_code == 201
+    labels = [p["candidate_label"] for p in response.json()["participants"]]
+    assert labels == ["A"]
 
 
 async def test_create_session_opens_a_lobby(gd_session: dict):

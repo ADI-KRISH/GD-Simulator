@@ -48,6 +48,10 @@ class AggregatedScore:
     needs_human_review: bool
     missing_dimensions: list[str] = field(default_factory=list)
     review_reasons: list[str] = field(default_factory=list)
+    # Interruption penalty (points off the 0-100 overall) and what produced it.
+    penalty: float = 0.0
+    interruptions: int = 0
+    interruption_times: list[float] = field(default_factory=list)
 
 
 def _fold_aliases(
@@ -62,10 +66,21 @@ def _fold_aliases(
     return folded_scores, folded_conf
 
 
+def interruption_penalty(count: int) -> float:
+    """Points deducted for `count` interruptions: linear, capped. Pure arithmetic —
+    the evaluators and critic can read the count but never change the deduction."""
+    from services.common.config import settings
+
+    return round(
+        min(settings.interruption_penalty_cap, count * settings.interruption_penalty_points), 2
+    )
+
+
 def aggregate_candidate(
     candidate_label: str,
     outputs: list[EvaluationOutput],
     weights: dict[str, float],
+    interruption_times: list[float] | None = None,
 ) -> AggregatedScore:
     """Apply the weighting policy to one candidate's agent outputs.
 
@@ -116,10 +131,15 @@ def aggregate_candidate(
     if confidence < LOW_CONFIDENCE_THRESHOLD:
         reasons.append(f"aggregate confidence {confidence:.2f} below {LOW_CONFIDENCE_THRESHOLD}")
 
+    times = sorted(interruption_times or [])
+    penalty = interruption_penalty(len(times))
     return AggregatedScore(
         candidate_label=candidate_label,
-        # Design §33 reports out of 100.
-        overall=round(overall_ten * 10, 2),
+        # Design §33 reports out of 100; interruptions cost points off the top.
+        overall=round(max(0.0, overall_ten * 10 - penalty), 2),
+        penalty=penalty,
+        interruptions=len(times),
+        interruption_times=times,
         dimensions=dimension_scores,
         weights=applied,
         confidence=round(confidence, 4),
@@ -130,10 +150,13 @@ def aggregate_candidate(
 
 
 def aggregate_session(
-    outputs_by_candidate: dict[str, list[EvaluationOutput]], weights: dict[str, float]
+    outputs_by_candidate: dict[str, list[EvaluationOutput]],
+    weights: dict[str, float],
+    interruptions: dict[str, list[float]] | None = None,
 ) -> dict[str, AggregatedScore]:
+    interruptions = interruptions or {}
     return {
-        label: aggregate_candidate(label, outputs, weights)
+        label: aggregate_candidate(label, outputs, weights, interruptions.get(label))
         for label, outputs in sorted(outputs_by_candidate.items())
     }
 

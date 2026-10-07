@@ -22,11 +22,13 @@ from services.common.errors import (
 )
 from services.common.events import Event, publish
 from services.common.timeutil import as_utc, utcnow
+from services.metrics.engine import RESPONSE_WINDOW_SECONDS
 from services.notifications.models import NotificationKind
 from services.notifications.service import notify
 from services.session import repository as repo
-from services.session.models import DEFAULT_WEIGHTS, GDSession, Participant, SpeechEvent
+from services.session.models import DEFAULT_WEIGHTS, GDSession, Participant, SpeechEvent, Turn
 from services.session.schemas import (
+    LobbyListItem,
     LobbyView,
     ParticipantOut,
     SessionCreate,
@@ -40,6 +42,7 @@ from services.session.state import (
     transition_participant,
     transition_session,
 )
+from services.speech.diarization import MIN_OVERLAP_SECONDS
 
 logger = logging.getLogger(__name__)
 
@@ -109,8 +112,26 @@ async def _set_participant_state(
 # --------------------------------------------------------------------------
 
 
+async def assert_not_in_active_session(
+    session: AsyncSession, user: User, *, except_session: uuid.UUID | None = None
+) -> None:
+    """One live seat per student: you cannot sit in two unfinished discussions."""
+    current = await repo.active_session_for_user(session, user.id)
+    if current is not None and current.id != except_session:
+        raise ConflictError(
+            f"you are already in a discussion ({current.code}); leave or finish it first"
+        )
+
+
 async def create_session(session: AsyncSession, host: User, payload: SessionCreate) -> GDSession:
+    # A student who creates a lobby sits in it, so they are bound by the same
+    # one-seat rule as anyone joining. Hosts/admins observe and are not seated.
+    seated = host.role == "candidate" or payload.mode == "solo"
+    if seated:
+        await assert_not_in_active_session(session, host)
     gd = GDSession(
+        mode=payload.mode,
+        personas=payload.personas,
         code=await _generate_code(session),
         host_id=host.id,
         topic=payload.topic.strip(),
@@ -129,6 +150,19 @@ async def create_session(session: AsyncSession, host: User, payload: SessionCrea
     created = await repo.create_session(session, gd)
     # The lobby opens the moment the session exists (FR-04).
     await _set_session_state(session, created, SessionState.WAITING)
+    if seated:
+        await repo.add_participant(
+            session,
+            Participant(
+                session_id=created.id,
+                user_id=host.id,
+                candidate_label="A",
+                display_name=host.full_name,
+                state=str(ParticipantState.JOINED),
+            ),
+        )
+        await _refresh_readiness(session, created)
+        await session.refresh(created, ["participants"])
     await notify(
         session,
         [host.id],
@@ -214,6 +248,9 @@ async def join_by_code(
     state = SessionState(gd.state)
     if state not in {SessionState.WAITING, SessionState.READY}:
         raise ConflictError(f"this session is not accepting participants (state {state})")
+    if gd.mode == "solo":
+        raise ConflictError("this is a private practice session")
+    await assert_not_in_active_session(session, user)
 
     current = await repo.list_active_participants(session, gd.id)
     if len(current) >= gd.max_participants:
@@ -582,13 +619,93 @@ async def record_speech(
     start: float,
     end: float,
 ) -> SpeechEvent:
+    return (await record_speech_tracked(session, gd, candidate_label, start, end))[0]
+
+
+async def record_speech_tracked(
+    session: AsyncSession,
+    gd: GDSession,
+    candidate_label: str,
+    start: float,
+    end: float,
+    *,
+    interrupted: str | None = None,
+) -> tuple[SpeechEvent, list[Turn]]:
+    """Persist a speech event and track the turn it makes.
+
+    Returns the event and every Turn row that was created or newly marked as an
+    interruption, so the caller can tell the room. The same path serves human
+    speakers and AI personas, so both modes are tracked identically.
+    """
     if end < start:
         raise InvalidStateTransition("speech event ends before it starts")
     event = SpeechEvent(session_id=gd.id, candidate_label=candidate_label, start=start, end=end)
     await repo.add_speech_event(session, event)
+
+    others = [
+        t for t in await repo.list_turns(session, gd.id) if t.candidate_label != candidate_label
+    ]
+    turn = Turn(session_id=gd.id, candidate_label=candidate_label, start=start, end=end)
+    changed: list[Turn] = [turn]
+
+    def overlap(a: Turn) -> float:
+        return min(a.end, end) - max(a.start, start)
+
+    # Whoever started later while the other still held the floor is the interrupter.
+    holders = [t for t in others if t.start < start and overlap(t) > MIN_OVERLAP_SECONDS]
+    if interrupted:
+        # The caller saw the floor being taken (practice barge-in) and says so.
+        turn.interrupted_label = interrupted
+    elif holders:
+        turn.interrupted_label = max(holders, key=lambda t: t.start).candidate_label
+    else:
+        # A speaker recorded late can retroactively be the one interrupted.
+        for t in others:
+            if t.start > start and t.interrupted_label is None and overlap(t) > MIN_OVERLAP_SECONDS:
+                t.interrupted_label = candidate_label
+                changed.append(t)
+        previous = [
+            t for t in others if t.end <= start and start - t.end <= RESPONSE_WINDOW_SECONDS
+        ]
+        if previous:
+            turn.reply_to_label = max(previous, key=lambda t: t.end).candidate_label
+
+    await repo.add_turn(session, turn)
     await publish(
         Event.SPEECH_ENDED,
         str(gd.id),
         {"candidate_label": candidate_label, "start": start, "end": end},
     )
-    return event
+    return event, changed
+
+
+async def interruption_times(
+    session: AsyncSession, session_id: uuid.UUID
+) -> dict[str, list[float]]:
+    """Start time of every interruption each candidate made — the penalty's evidence."""
+    times: dict[str, list[float]] = {}
+    for turn in await repo.list_turns(session, session_id):
+        if turn.interrupted_label is not None:
+            times.setdefault(turn.candidate_label, []).append(turn.start)
+    return times
+
+
+async def list_open_lobbies(session: AsyncSession, limit: int, offset: int) -> list[LobbyListItem]:
+    """The public lobby browser: group sessions still accepting students."""
+    return [
+        LobbyListItem(
+            session_id=gd.id,
+            code=gd.code,
+            topic=gd.topic,
+            topic_category=gd.topic_category,
+            gd_type=gd.gd_type,
+            difficulty=gd.difficulty,
+            host_name=host,
+            occupancy=occupancy,
+            capacity=gd.max_participants,
+            duration_seconds=gd.duration_seconds,
+            preparation_seconds=gd.preparation_seconds,
+        )
+        for gd, host, occupancy in await repo.list_open_lobbies(session, limit, offset)
+        if occupancy < gd.max_participants
+    ]

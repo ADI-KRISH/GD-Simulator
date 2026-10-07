@@ -133,7 +133,7 @@ export default function HomePage() {
             </h1>
             <p className="subtitle" style={{ marginBottom: 0 }}>
               {isHostRole
-                ? "Create a discussion, seat AI agents for a demo, or join one with a code."
+                ? "Open a lobby, practice with AI, or join one with a code."
                 : "Join a discussion with the code your host gave you."}
             </p>
           </div>
@@ -162,20 +162,35 @@ export default function HomePage() {
         </div>
       </div>
 
+      <div className="modes">
+        <Link href="/lobbies" className="mode" style={{ ["--h" as string]: 235 }}>
+          <span className="orb" style={{ ["--h" as string]: 235 }} aria-hidden>
+            3
+          </span>
+          <h2>Group discussion</h2>
+          <p>Join a lobby another student opened, or open your own with a topic and a timer.</p>
+        </Link>
+        <Link href="/practice/new" className="mode" style={{ ["--h" as string]: 172 }}>
+          <span className="orb" style={{ ["--h" as string]: 172 }} aria-hidden>
+            AI
+          </span>
+          <h2>Practice with AI</h2>
+          <p>Talk it out loud with AI personas that push back, interrupt and keep you honest.</p>
+        </Link>
+      </div>
+
       <div className="actions">
-        {isHostRole && (
-          <Link href="/sessions/new" className="action">
-            <span className="feature-icon" aria-hidden>
-              ➕
+        <Link href="/sessions/new" className="action">
+          <span className="feature-icon" aria-hidden>
+            ➕
+          </span>
+          <span>
+            <strong>Open a lobby</strong>
+            <span className="meta" style={{ display: "block" }}>
+              Set the topic, timer and seats
             </span>
-            <span>
-              <strong>New discussion</strong>
-              <span className="meta" style={{ display: "block" }}>
-                Topic, timer and AI agents
-              </span>
-            </span>
-          </Link>
-        )}
+          </span>
+        </Link>
         <Link href="/history" className="action">
           <span className="feature-icon" aria-hidden>
             📈

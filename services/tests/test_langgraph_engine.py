@@ -120,23 +120,26 @@ async def test_a_graph_run_scores_every_candidate():
     assert final["failures"] == []
 
 
-async def test_the_fan_out_makes_one_branch_per_specialist():
+async def test_the_fan_out_makes_one_branch_per_specialist(monkeypatch):
     """`Send` fan-out is dynamic — the roster is only known after `plan`."""
+    # One call per specialist is the fan-out itself; the critic loop is covered separately.
+    monkeypatch.setattr(graph_module.settings, "evaluation_agentic", False)
     llm = StubLLM()
     set_llm_provider(llm)
     await _run(strategy="per_dimension")
 
     # Evaluator calls plus one synthesis call per candidate.
-    evaluator_calls = [c for c in llm.calls if "tools" not in c]
+    evaluator_calls = [c for c in llm.calls if "compute_final_score" not in c.get("tools", [])]
     assert len(evaluator_calls) == len(select_agents("technical"))
 
 
-async def test_the_per_candidate_strategy_fans_out_wider():
+async def test_the_per_candidate_strategy_fans_out_wider(monkeypatch):
+    monkeypatch.setattr(graph_module.settings, "evaluation_agentic", False)
     llm = StubLLM()
     set_llm_provider(llm)
     await _run(strategy="per_candidate")
 
-    evaluator_calls = [c for c in llm.calls if "tools" not in c]
+    evaluator_calls = [c for c in llm.calls if "compute_final_score" not in c.get("tools", [])]
     assert len(evaluator_calls) == len(select_agents("technical")) * len(LABELS)
 
 
@@ -194,6 +197,8 @@ async def test_a_dead_specialist_is_isolated_to_its_branch():
             )
 
         async def complete_with_tools(self, **kwargs):
+            if "YOUR DIMENSION: behavior" in kwargs["system"]:
+                raise LLMError("this specialist is down")
             return await StubLLM().complete_with_tools(**kwargs)
 
     set_llm_provider(OneDown())
@@ -216,3 +221,19 @@ async def test_a_total_failure_ends_the_graph_without_inventing_a_report():
 
     assert not any(final["outputs_by_candidate"].values())
     assert "scores" not in final or not final["scores"]
+
+
+async def test_agentic_specialists_use_tools_and_the_critic_sends_bad_evidence_back():
+    """Evaluators get evidence tools; evidence at a moment nobody spoke is revised once."""
+    llm = StubLLM()
+    set_llm_provider(llm)
+    final = await _run()
+
+    tool_calls = [c for c in llm.calls if "get_turns" in c.get("tools", [])]
+    assert tool_calls, "specialists should be given evidence tools"
+    # The stub cites random timestamps, so the critic must have flagged some.
+    assert final["critic_notes"], "the critic should flag evidence it cannot verify"
+    revised = [r for r in final["runs"] if any("revised" in n for n in r.critic)]
+    assert revised, "flagged verdicts are sent back once"
+    # Revision never deletes a score.
+    assert set(final["scores"]) == set(LABELS)

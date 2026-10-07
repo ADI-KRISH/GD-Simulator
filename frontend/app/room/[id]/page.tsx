@@ -18,12 +18,13 @@
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
+import { ArenaHeader, Notices, RoundTable, type SeatInfo } from "@/app/immersive/parts";
 import { ObserverCard } from "@/app/observer-card";
 import { TranscriptCard } from "@/app/transcript-card";
 import { ApiError, sessions } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { useMediaRoom } from "@/lib/use-media-room";
-import { formatClock, useSessionSocket } from "@/lib/use-session-socket";
+import { useSessionSocket } from "@/lib/use-session-socket";
 import type { GDSession, MediaToken, TranscriptOut } from "@/lib/types";
 
 export default function RoomPage() {
@@ -122,197 +123,149 @@ export default function RoomPage() {
   const topic = socket.topic?.released ? socket.topic.topic : session.topic;
   const roster = socket.lobby?.participants ?? session.participants;
 
-  // Each candidate's most recent line, shown as a caption on their tile.
-  const lastLine = new Map<string, string>();
-  for (const line of transcript?.lines ?? []) lastLine.set(line.candidate_label, line.text);
   const hasVideo = !observing || media.remotes.length > 0;
-  const progress =
-    timer && timer.duration_seconds > 0
-      ? Math.max(0, Math.min(100, (timer.seconds_remaining / timer.duration_seconds) * 100))
-      : 0;
+  const seats: SeatInfo[] = roster.map((participant) => {
+    const speaking =
+      socket.speaking.includes(participant.candidate_label) ||
+      media.activeSpeakers.includes(participant.candidate_label);
+    const isAI = participant.display_name.endsWith("(AI)");
+    return {
+      label: participant.candidate_label,
+      name: participant.display_name.replace(/\s*\(AI\)$/, ""),
+      you: participant.candidate_label === socket.you,
+      badge: isAI ? "AI" : undefined,
+      speaking,
+      strikes: socket.penalties[participant.candidate_label]?.interruptions,
+      away: participant.state === "DISCONNECTED",
+      sub: participant.state === "DISCONNECTED" ? "away" : "listening",
+    };
+  });
+  const names = new Map(seats.map((s) => [s.label, s.name]));
+  const nameOf = (label: string) => names.get(label) ?? label;
+
+  const lines = transcript?.lines ?? [];
+  const latest = lines[lines.length - 1];
+  const myPenalty = socket.you ? socket.penalties[socket.you]?.penalty : undefined;
 
   return (
-    <div className="stack">
-      <div className="card">
-        <div className="row row--between row--wrap">
-          <div style={{ flex: "1 1 20rem" }}>
-            <span className={`pill ${isLive ? "pill--live" : ""}`}>
-              {phase === "preparation" ? "preparation" : isLive ? "live" : phase}
-            </span>
-            <h1 style={{ marginTop: "0.5rem" }}>{topic}</h1>
-            <p className="subtitle" style={{ marginBottom: 0 }}>
-              {observing ? (
-                <>You are hosting: watching, not recorded or evaluated.</>
-              ) : (
-                <>
-                  You are candidate <strong>{socket.you ?? "—"}</strong>. Everything you say is
-                  transcribed and evaluated after the discussion ends.
-                </>
-              )}
-            </p>
-          </div>
-          <div className="row" style={{ gap: "1.2rem" }}>
-            <div style={{ textAlign: "right" }}>
-              <div className={`clock ${timer?.warning ? "clock--warn" : ""}`}>
-                {formatClock(timer?.seconds_remaining ?? 0)}
-              </div>
-              <p className="meta" style={{ margin: 0 }}>
-                {phase === "preparation" ? "until the discussion starts" : "remaining"}
-              </p>
-            </div>
+    <div className="arena">
+      <ArenaHeader
+        topic={topic}
+        phaseLabel={phase === "preparation" ? "Preparation" : isLive ? "Live" : phase}
+        live={isLive}
+        seconds={timer?.seconds_remaining ?? 0}
+        duration={timer?.duration_seconds ?? 0}
+        warn={timer?.warning}
+        right={
+          <>
+            {!observing && isLive && (myPenalty ?? 0) > 0 && (
+              <span className="arena-phase" title="Interruption penalty so far">
+                <i style={{ background: "var(--hot)" }} />
+                Interruptions: −{myPenalty}
+              </span>
+            )}
             {isHost && (
-              <button type="button" className="danger" onClick={endSession} disabled={ending}>
+              <button type="button" className="arena-btn arena-btn--danger" onClick={endSession} disabled={ending}>
                 {ending ? "Ending…" : "End discussion"}
               </button>
             )}
-          </div>
-        </div>
-        <div className={`timer-bar ${timer?.warning ? "timer-bar--warn" : ""}`}>
-          <span style={{ width: `${progress}%` }} />
-        </div>
+          </>
+        }
+      />
+
+      <div>
+        <RoundTable
+          seats={seats}
+          centre={
+            latest ? (
+              <>
+                <p className="caption-who">{nameOf(latest.candidate_label)}</p>
+                <p className="caption-now">{latest.text}</p>
+              </>
+            ) : (
+              <p>
+                {observing
+                  ? "You are hosting: watching, not recorded or evaluated."
+                  : isLive
+                    ? "Nobody has spoken yet."
+                    : "The discussion opens when preparation ends."}
+              </p>
+            )
+          }
+        />
+        <Notices notices={socket.notices} nameOf={nameOf} />
       </div>
 
-      {error && <div className="alert alert--error">{error}</div>}
-      {/* A watching host publishes nothing, so a missing media server (e.g. no
-          LiveKit when running without Docker) is not their problem to see. */}
-      {media.error && !observing && <div className="alert alert--error">Media: {media.error}</div>}
-      {media.uploadError && (
-        <div className="alert alert--error">
-          Transcription upload failed ({media.uploadError}). The discussion is unaffected — the
-          audio is retried server-side.
-        </div>
-      )}
-
-      <div className="split">
-        <div className="stack">
-          <div className="card">
-            <div className="row row--between" style={{ marginBottom: "0.9rem" }}>
-              <h2 className="card-title">Discussion</h2>
-              <span className="meta">
-                {roster.length} candidate{roster.length === 1 ? "" : "s"}
-                {socket.speaking.length > 0 && ` · ${socket.speaking.join(", ")} speaking`}
-              </span>
-            </div>
-            <div className="stage">
-              {roster.map((participant) => {
-                const speaking =
-                  socket.speaking.includes(participant.candidate_label) ||
-                  media.activeSpeakers.includes(participant.candidate_label);
-                const isAI = participant.display_name.endsWith("(AI)");
-                const name = participant.display_name.replace(/\s*\(AI\)$/, "");
-                const said = lastLine.get(participant.candidate_label);
-                return (
-                  <div
-                    key={participant.id}
-                    className={`tile ${speaking ? "tile--speaking" : ""} ${
-                      participant.state === "DISCONNECTED" ? "tile--away" : ""
-                    }`}
-                  >
-                    <div className="tile-head">
-                      <span className="avatar avatar--lg">{participant.candidate_label}</span>
-                      <div style={{ minWidth: 0 }}>
-                        <div className="tile-name">
-                          {name} {isAI && <span className="badge">AI</span>}
-                        </div>
-                        <div className="meta">
-                          {speaking ? (
-                            <span className="row" style={{ gap: "0.4rem", color: "var(--ok)" }}>
-                              <span className="speaking-dots" aria-hidden>
-                                <span />
-                                <span />
-                                <span />
-                              </span>
-                              speaking
-                            </span>
-                          ) : participant.state === "DISCONNECTED" ? (
-                            "away"
-                          ) : (
-                            "listening"
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                    <div className="caption">
-                      {said ? `“${said}”` : isLive ? "Has not spoken yet." : "Waiting to start."}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-
-            {hasVideo && (
-              <>
-                <div
-                  className="row row--wrap"
-                  style={{ marginTop: "1rem", alignItems: "flex-start" }}
-                >
-                  {!observing && (
-                    <div style={{ position: "relative", width: 220 }}>
-                      <video
-                        ref={media.localVideoRef}
-                        className="remote-video"
-                        autoPlay
-                        muted
-                        playsInline
-                        style={{
-                          transform: "scaleX(-1)",
-                          opacity: media.cameraEnabled ? 1 : 0.15,
-                        }}
-                      />
-                      <span
-                        className="meta"
-                        style={{
-                          position: "absolute",
-                          left: 8,
-                          bottom: 6,
-                          color: "#fff",
-                        }}
-                      >
-                        You{media.micEnabled ? "" : " · muted"}
-                      </span>
-                    </div>
-                  )}
-                  <div id="remote-media" style={{ flex: 1 }} />
-                </div>
-                {!observing && (
-                  <div className="row row--wrap" style={{ marginTop: "0.8rem" }}>
-                    <button
-                      type="button"
-                      className="secondary"
-                      onClick={media.toggleMic}
-                      disabled={!media.connected}
-                      aria-pressed={!media.micEnabled}
-                    >
-                      {media.micEnabled ? "🎤 Audio on" : "🔇 Audio off"}
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary"
-                      onClick={media.toggleCamera}
-                      disabled={!media.connected}
-                      aria-pressed={!media.cameraEnabled}
-                    >
-                      {media.cameraEnabled ? "📷 Video on" : "🚫 Video off"}
-                    </button>
-                    <span className="meta">
-                      {media.connected
-                        ? `media connected · ${media.uploadedChunks} audio window${
-                            media.uploadedChunks === 1 ? "" : "s"
-                          } sent`
-                        : media.connecting
-                          ? "connecting…"
-                          : "media offline"}
-                    </span>
-                  </div>
-                )}
-              </>
-            )}
+      <div className="stack" style={{ gap: "0.7rem" }}>
+        {error && <div className="alert alert--error">{error}</div>}
+        {/* A watching host publishes nothing, so a missing media server (e.g. no
+            LiveKit when running without Docker) is not their problem to see. */}
+        {media.error && !observing && <div className="alert alert--error">Media: {media.error}</div>}
+        {media.uploadError && (
+          <div className="alert alert--error">
+            Transcription upload failed ({media.uploadError}). The discussion is unaffected — the
+            audio is retried server-side.
           </div>
+        )}
 
-          {isLive && transcript && <TranscriptCard transcript={transcript} live />}
-        </div>
+        {hasVideo && (
+          <div className="video-strip">
+            {!observing && (
+              <div className="video-self">
+                <video
+                  ref={media.localVideoRef}
+                  className="remote-video"
+                  autoPlay
+                  muted
+                  playsInline
+                  style={{ transform: "scaleX(-1)", opacity: media.cameraEnabled ? 1 : 0.15 }}
+                />
+                <span className="meta">You{media.micEnabled ? "" : " (muted)"}</span>
+              </div>
+            )}
+            <div id="remote-media" className="video-remote" />
+          </div>
+        )}
 
-        <div className="stack">{isLive && <ObserverCard sessionId={id} />}</div>
+        {!observing && hasVideo && (
+          <div className="arena-foot">
+            <button
+              type="button"
+              className="arena-btn"
+              onClick={media.toggleMic}
+              disabled={!media.connected}
+              aria-pressed={!media.micEnabled}
+            >
+              {media.micEnabled ? "Mute" : "Unmute"}
+            </button>
+            <button
+              type="button"
+              className="arena-btn"
+              onClick={media.toggleCamera}
+              disabled={!media.connected}
+              aria-pressed={!media.cameraEnabled}
+            >
+              {media.cameraEnabled ? "Turn camera off" : "Turn camera on"}
+            </button>
+            <span className="arena-hint">
+              {media.connected
+                ? `Connected. ${media.uploadedChunks} audio window${media.uploadedChunks === 1 ? "" : "s"} sent for transcription.`
+                : media.connecting
+                  ? "Connecting…"
+                  : "Media offline."}
+            </span>
+          </div>
+        )}
+
+        {isLive && (
+          <details className="arena-drawer">
+            <summary>Transcript and live observations</summary>
+            <div className="split">
+              {transcript && <TranscriptCard transcript={transcript} live />}
+              <ObserverCard sessionId={id} />
+            </div>
+          </details>
+        )}
       </div>
     </div>
   );

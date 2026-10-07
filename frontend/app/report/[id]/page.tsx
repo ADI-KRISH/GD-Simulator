@@ -330,6 +330,17 @@ function ScoreBreakdown({ body, session }: { body: CandidateReportBody; session:
           </span>
         ))}
         ) = <strong>{total.toFixed(1)}</strong>
+        {(body.penalty ?? 0) > 0 && (
+          <>
+            <br />
+            Interruption penalty = −<strong>{body.penalty}</strong> (
+            {body.interruption_times?.length ?? 0} interruption
+            {(body.interruption_times?.length ?? 0) === 1 ? "" : "s"} at{" "}
+            {(body.interruption_times ?? []).map((t) => formatTime(t)).join(", ")})
+            <br />
+            Final = <strong>{body.overall_score.toFixed(1)}</strong>
+          </>
+        )}
       </div>
       <table className="breakdown">
         <thead>
@@ -397,6 +408,11 @@ function ScoreBreakdown({ body, session }: { body: CandidateReportBody; session:
       </ul>
     </>
   );
+}
+
+function formatTime(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds));
+  return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 }
 
 function SynthesisPanel({ synthesis }: { synthesis: CandidateReportBody["synthesis"] }) {
