@@ -176,6 +176,8 @@ async def practice_socket(
                 await room.on_utterance_start()
             elif event == "UTTERANCE_END":
                 await room.on_utterance_end()
+            elif event == "PLAYBACK_ENDED":
+                room.on_playback_ended()
     except WebSocketDisconnect:
         pass
     except Exception:  # pragma: no cover - defensive

@@ -30,7 +30,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from services.llm import LLMError, get_llm_provider
+from services.llm import LLMError, get_persona_llm_provider
 from services.practice import timing as clock
 from services.realtime.hub import hub
 from services.realtime.protocol import ServerEvent, server_frame
@@ -63,6 +63,13 @@ WRAP_UP_IDLE_SECONDS = 6.0
 CHAIN_PROBABILITY = 0.35
 MAX_CHAIN = 2
 OPENING_DELAY_SECONDS = 2.5
+# After the student's words are transcribed, wait this long (and until nobody is
+# mid-sentence or being transcribed) before a persona answers: hear them out first.
+LISTEN_HOLD_SECONDS = 0.6
+LISTEN_WAIT_LIMIT_SECONDS = 4.0
+# Extra time allowed for the browser to finish playing a line before we give up
+# waiting for its PLAYBACK_ENDED message.
+PLAYBACK_SLACK_SECONDS = 4.0
 # Utterances shorter than this are mic noise, not contributions.
 MIN_WORDS = 2
 
@@ -123,6 +130,8 @@ class PracticeRoom:
         self.burst: asyncio.Task | None = None
         self.idle: asyncio.Task | None = None
         self.opened = False
+        self.stt_pending = 0  # utterances still being transcribed
+        self.playback_done = asyncio.Event()  # the browser finished playing the line
         # Someone (student or persona) has already wrapped the discussion up.
         self.concluded = False
 
@@ -226,6 +235,7 @@ class PracticeRoom:
         if start is None or end is None or not blob:
             return
 
+        self.stt_pending += 1
         try:
             transcription = await get_stt_provider().transcribe(blob)
         except Exception as exc:  # STT vendor/runtime failure must not kill the room
@@ -236,6 +246,8 @@ class PracticeRoom:
                 )
             )
             return
+        finally:
+            self.stt_pending -= 1
         text = transcription.text.strip()
         if len(re.findall(r"\w+", text)) < MIN_WORDS:
             return
@@ -249,7 +261,11 @@ class PracticeRoom:
         self.last_activity = time.monotonic()
         await self._announce(STUDENT_LABEL, self.student_name, text, changed, interrupts)
         await self._send_json(server_frame(ServerEvent.USER_TRANSCRIPT, self.sid, {"text": text}))
-        self._start_burst(addressed=self._addressed(text))
+        self._start_burst(addressed=self._addressed(text), hold=LISTEN_HOLD_SECONDS)
+
+    def on_playback_ended(self) -> None:
+        """The browser finished playing (or gave up on) the persona's line."""
+        self.playback_done.set()
 
     # ------------------------------------------------------------- recording
 
@@ -303,14 +319,27 @@ class PracticeRoom:
             ]
         return random.choices(pool, weights=weights)[0]["label"]
 
-    def _start_burst(self, addressed: str | None = None) -> None:
+    def _start_burst(self, addressed: str | None = None, hold: float = 0.0) -> None:
+        if self.speaking:
+            return  # one voice at a time: never start a second line over a live one
         if self.burst and not self.burst.done():
             self.burst.cancel()
-        self.burst = asyncio.create_task(self._burst(addressed), name=f"practice-{self.sid}")
+        self.burst = asyncio.create_task(self._burst(addressed, hold), name=f"practice-{self.sid}")
 
-    async def _burst(self, addressed: str | None = None) -> None:
+    async def _listen(self, hold: float) -> bool:
+        """Wait until the student is done talking. False if they are still going."""
+        await asyncio.sleep(hold)
+        waited = 0.0
+        while (self.user_active or self.stt_pending) and waited < LISTEN_WAIT_LIMIT_SECONDS:
+            await asyncio.sleep(0.2)
+            waited += 0.2
+        return not self.user_active and not self.stt_pending
+
+    async def _burst(self, addressed: str | None = None, hold: float = 0.0) -> None:
         """A persona answers; sometimes another follows on, then the floor is the student's."""
         try:
+            if not await self._listen(hold):
+                return  # the student is still speaking; their next utterance re-triggers us
             for turn in range(MAX_CHAIN):
                 when = await self._timing()
                 if when is None or when.phase == clock.OVER:
@@ -353,7 +382,12 @@ class PracticeRoom:
                     continue
                 quiet = time.monotonic() - self.last_activity
                 nudge_after = WRAP_UP_IDLE_SECONDS if when.converging else IDLE_SECONDS
-                busy = self.speaking or self.user_active or (self.burst and not self.burst.done())
+                busy = (
+                    self.speaking
+                    or self.user_active
+                    or self.stt_pending
+                    or (self.burst and not self.burst.done())
+                )
                 if busy:
                     continue
                 if not self.opened and quiet >= OPENING_DELAY_SECONDS:
@@ -389,7 +423,7 @@ class PracticeRoom:
             + '\n\nReturn JSON: {"speak": <bool>, "is_conclusion": <bool>, '
             '"text": "<what you say next>"}.'
         )
-        result = await get_llm_provider().complete_json(
+        result = await get_persona_llm_provider().complete_json(
             system=system,
             prompt=f"Discussion so far:\n{history}\n\nWhat do you say next?",
             schema=LINE_SCHEMA,
@@ -430,6 +464,9 @@ class PracticeRoom:
         tts = get_tts_provider()
         self.speaking = label
         self.barge.clear()
+        self.playback_done.clear()
+        started_audio = False
+        finished = False
         total_bytes = 0
         audio = tts.produces_audio
         try:
@@ -446,6 +483,7 @@ class PracticeRoom:
                     },
                 )
             )
+            started_audio = True
             if audio:
                 try:
                     async for chunk in tts.stream(text, persona["voice_id"]):
@@ -468,6 +506,7 @@ class PracticeRoom:
             if start is None:
                 return False
             self.playing = label
+            started_audio = True
             await self._send_json(
                 server_frame(ServerEvent.PERSONA_AUDIO_READY, self.sid, {"candidate_label": label})
             )
@@ -479,14 +518,35 @@ class PracticeRoom:
                     {"candidate_label": label, "start": start},
                 ),
             )
-            try:
-                await asyncio.wait_for(self.barge.wait(), timeout=duration)
-            except TimeoutError:
-                pass
+            # Hold the floor until the browser says the line is done (or the student
+            # cuts in). The byte-count estimate is only the fallback.
+            waits = [
+                asyncio.create_task(self.barge.wait()),
+                asyncio.create_task(self.playback_done.wait()),
+            ]
+            await asyncio.wait(
+                waits,
+                timeout=max(duration * 1.3, duration + PLAYBACK_SLACK_SECONDS),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in waits:
+                task.cancel()
             cut = self.barge.is_set()
-            end = max(self._now(), start) + BARGE_IN_TAIL_SECONDS if cut else start + duration
+            if cut:
+                end = max(self._now(), start) + BARGE_IN_TAIL_SECONDS
+            elif self.playback_done.is_set():
+                end = max(self._now(), start)
+            else:
+                end = start + duration
+            finished = True
             changed, interrupts = await self._record(label, start, end, text)
         finally:
+            if started_audio and not finished:
+                # Cancelled mid-line: make sure the browser does not keep talking.
+                try:
+                    await self._send_json(server_frame(ServerEvent.STOP_AUDIO, self.sid, {}))
+                except Exception:  # noqa: BLE001 - the socket may already be gone
+                    pass
             self.speaking = None
             self.playing = None
 

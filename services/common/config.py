@@ -88,6 +88,8 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     openai_api_key: str = ""
     anthropic_api_key: str = ""
+    # Faster model for the practice personas' short spoken lines (empty = LLM_MODEL).
+    persona_llm_model: str = ""
     llm_max_tokens: int = 2048
     llm_timeout_seconds: float = 60.0
     llm_max_retries: int = 3

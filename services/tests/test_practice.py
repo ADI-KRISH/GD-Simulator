@@ -3,13 +3,23 @@
 import asyncio
 import uuid
 
+import pytest
 from httpx import AsyncClient
 
+from services.practice import engine
 from services.practice.engine import STUDENT_LABEL, PracticeRoom
 from services.practice.personas import resolve_personas
 from services.session import repository as session_repo
 from services.speech.stt import StubSTT, set_stt_provider
 from services.speech.tts import StubTTS, set_tts_provider
+
+
+@pytest.fixture(autouse=True)
+def _fast_room(monkeypatch):
+    """No real browser reports playback in tests, so do not wait for one."""
+    monkeypatch.setattr(engine, "PLAYBACK_SLACK_SECONDS", 0.0)
+    monkeypatch.setattr(engine, "LISTEN_HOLD_SECONDS", 0.05)
+
 
 PRACTICE = {
     "topic": "Should remote work be the default?",
@@ -164,3 +174,35 @@ async def test_personas_stay_silent_once_the_student_has_concluded(
     await room._burst()
     assert not any(f.get("type") == "PERSONA_AUDIO_START" for f in sent)
     await room.close()
+
+
+async def test_personas_wait_for_the_student_to_finish(
+    client: AsyncClient, candidate_auth: dict, session_factory
+):
+    set_stt_provider(StubSTT())
+    set_tts_provider(StubTTS())
+    session = await _live_practice(client, candidate_auth)
+    room, sent = _room(session_factory, session["id"])
+    await room.load()
+
+    room.user_active = True  # the student is still mid-sentence
+    room.last_speaker = STUDENT_LABEL
+    task = asyncio.create_task(room._burst(hold=0.0))
+    await asyncio.sleep(0.5)
+    assert not any(f.get("type") == "PERSONA_AUDIO_START" for f in sent)
+
+    room.user_active = False  # they stop; now a persona may answer
+    await asyncio.wait_for(task, timeout=10)
+    assert any(f.get("type") == "PERSONA_AUDIO_START" for f in sent)
+    await room.close()
+
+
+async def test_a_new_burst_never_starts_over_a_live_line(
+    client: AsyncClient, candidate_auth: dict, session_factory
+):
+    session = await _live_practice(client, candidate_auth)
+    room, _ = _room(session_factory, session["id"])
+    await room.load()
+    room.speaking = "P1"  # a persona is mid-line
+    room._start_burst()
+    assert room.burst is None  # refused: one voice at a time

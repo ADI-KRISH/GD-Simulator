@@ -38,9 +38,7 @@ class AnthropicProvider:
         max_retries: int | None = None,
     ) -> None:
         self.model = model or settings.llm_model
-        self._api_key = (
-            api_key or settings.llm_api_key or settings.anthropic_api_key or None
-        )
+        self._api_key = api_key or settings.llm_api_key or settings.anthropic_api_key or None
         self._timeout = timeout if timeout is not None else settings.llm_timeout_seconds
         self._max_retries = max_retries if max_retries is not None else settings.llm_max_retries
         self._client = None

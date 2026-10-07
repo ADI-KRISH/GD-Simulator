@@ -26,7 +26,8 @@ FINAL_SECONDS = 20.0
 # Too late to start a new line of speech that must also be spoken aloud.
 TOO_LATE_SECONDS = 5.0
 
-MAX_WORDS = {OPENING: 45, MIDDLE: 45, WRAP_UP: 60, FINAL: 22}
+# Short lines are faster to generate and to say, and sound like conversation.
+MAX_WORDS = {OPENING: 35, MIDDLE: 35, WRAP_UP: 50, FINAL: 20}
 
 _CONCLUDING = re.compile(
     r"\b(to conclude|in conclusion|to sum up|to summari[sz]e|in summary|"

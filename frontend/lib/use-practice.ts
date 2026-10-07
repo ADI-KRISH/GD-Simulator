@@ -106,6 +106,14 @@ export function usePractice(sessionId: string | null) {
     setPersonaLevel(0);
   }, []);
 
+  /** Tell the server the line has finished playing so the next speaker can start. */
+  const sendEnded = useCallback(() => {
+    const socket = socketRef.current;
+    if (socket?.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "PLAYBACK_ENDED" }));
+    }
+  }, []);
+
   const playPending = useCallback(() => {
     const pending = pendingRef.current;
     pendingRef.current = null;
@@ -130,9 +138,11 @@ export function usePractice(sessionId: string | null) {
       audio.onended = () => {
         playingRef.current = false;
         setPersonaLevel(0);
+        sendEnded();
       };
       void audio.play().catch(() => {
         playingRef.current = false;
+        sendEnded();
       });
       return;
     }
@@ -148,9 +158,12 @@ export function usePractice(sessionId: string | null) {
       synthRef.current = false;
       playingRef.current = false;
       setPersonaLevel(0);
+      sendEnded();
     };
+    utterance.onerror = utterance.onend;
+    speechSynthesis.cancel();
     speechSynthesis.speak(utterance);
-  }, []);
+  }, [sendEnded]);
 
   // Persona orb level: real analyser data for ElevenLabs audio, a gentle
   // pulse for browser speech.
@@ -208,6 +221,8 @@ export function usePractice(sessionId: string | null) {
             candidate_label: string;
             gender?: string;
           };
+          // A new line starting means the old one must not still be playing.
+          stopPlayback();
           pendingRef.current = { text: p.text, audio: p.audio, gender: p.gender };
           chunksRef.current = [];
           setThinking(p.candidate_label);
