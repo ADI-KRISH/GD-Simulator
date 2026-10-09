@@ -38,6 +38,7 @@ from services.evaluation import repository as repo
 from services.evaluation.agents.definitions import select_agents
 from services.evaluation.aggregator import aggregate_session, normalise_weights
 from services.evaluation.graph import run_graph
+from services.evaluation.group_synthesis import synthesise_group
 from services.evaluation.models import AgentOutput, CandidateScore, EvaluationJob, Report
 from services.evaluation.report import build_candidate_report, build_group_report
 from services.evaluation.supervisor import run as run_supervisor
@@ -165,6 +166,7 @@ async def _orchestrate(
                         score.weights or weights,
                         metrics.per_candidate[label],
                         topic,
+                        segments,
                     )
                     for label, score in scores.items()
                 )
@@ -418,6 +420,10 @@ async def run_job(session: AsyncSession, job: EvaluationJob) -> EvaluationJob:
 
     group = build_group_report(str(gd.id), gd.topic, scores, metrics, state)
     body = group.to_dict()
+    # The group report agent writes the narrative; every figure in `body` stays computed.
+    narrative = await synthesise_group(gd.topic, scores, names, metrics, state, syntheses)
+    if narrative:
+        body["narrative"] = narrative
     if outcome.conflicts:
         # Surfaced rather than resolved — a human reviewer needs to see it.
         body["agent_conflicts"] = outcome.conflicts

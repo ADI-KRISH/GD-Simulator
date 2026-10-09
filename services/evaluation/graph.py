@@ -281,6 +281,7 @@ async def synthesise_node(state: dict[str, Any]) -> dict[str, Any]:
         score.weights or state["weights"],
         state["metrics"].per_candidate[label],
         state["topic"],
+        state["segments"],
     )
     return {"syntheses": [(label, result)]}
 

@@ -17,7 +17,7 @@ npm-debug.log*
 
 # Local secrets and state — never commit
 .env
-.env.local
+.env.*
 *.local.env
 
 # Local volumes / generated data
@@ -36,3 +36,9 @@ Thumbs.db
 
 # Local SQLite database (no-Docker mode)
 *.db
+
+# Backend runtime logs
+backend.*.log
+
+# Generated audio samples — tracked only when small (<5 MB total)
+# voice_samples/ is intentionally included (currently ~0.5 MB)

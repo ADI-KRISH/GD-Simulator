@@ -16,6 +16,7 @@ import asyncio
 import json
 import logging
 import random
+import re
 from typing import Any
 
 from services.common.config import settings
@@ -42,6 +43,31 @@ class OpenAIProvider:
         self._timeout = timeout if timeout is not None else settings.llm_timeout_seconds
         self._max_retries = max_retries if max_retries is not None else settings.llm_max_retries
         self._client = None
+        limit = settings.llm_max_concurrency
+        self._slots = asyncio.Semaphore(limit) if limit > 0 else None
+
+    async def _create(self, client, **request):
+        """One chat completion, honouring the vendor's own rate-limit wait.
+
+        Free tiers cap tokens per minute and say how long to wait. Sleeping that long
+        (up to ten attempts, each capped at a minute) succeeds where the short generic
+        backoff burns every retry inside the same window.
+        """
+        for attempt in range(10):
+            try:
+                if self._slots is None:
+                    return await client.chat.completions.create(**request)
+                async with self._slots:
+                    return await client.chat.completions.create(**request)
+            except Exception as exc:
+                wait = _rate_limit_wait(exc)
+                if wait is None or attempt == 9:
+                    raise
+                logger.warning(
+                    "rate limited, waiting for the window",
+                    extra={"wait": round(wait, 1), "attempt": attempt + 1},
+                )
+                await asyncio.sleep(wait)
 
     def _get_client(self):
         if self._client is None:
@@ -56,6 +82,8 @@ class OpenAIProvider:
             kwargs: dict[str, Any] = {"timeout": self._timeout, "max_retries": 0}
             if self._api_key:
                 kwargs["api_key"] = self._api_key
+            if settings.openai_base_url:
+                kwargs["base_url"] = settings.openai_base_url
             self._client = AsyncOpenAI(**kwargs)
         return self._client
 
@@ -82,7 +110,8 @@ class OpenAIProvider:
 
         for attempt in range(self._max_retries):
             try:
-                response = await client.chat.completions.create(
+                response = await self._create(
+                    client,
                     model=self.model,
                     max_completion_tokens=max_tokens or settings.llm_max_tokens,
                     messages=[
@@ -108,7 +137,7 @@ class OpenAIProvider:
 
                 usage = response.usage
                 return LLMResult(
-                    data=json.loads(text),
+                    data=_parse_json(text),
                     model=response.model,
                     input_tokens=usage.prompt_tokens if usage else 0,
                     output_tokens=usage.completion_tokens if usage else 0,
@@ -159,6 +188,13 @@ class OpenAIProvider:
         is done it returns content matching the schema.
         """
         client = self._get_client()
+        if settings.openai_base_url:
+            # Other OpenAI-compatible vendors (e.g. Groq) reject response_format together
+            # with tools, so the schema goes in the prompt; the contract gate still validates.
+            system = (
+                f"{system}\n\nWhen finished, reply with ONLY a JSON object matching this "
+                f"JSON Schema, no prose:\n{json.dumps(schema)}"
+            )
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system},
             {"role": "user", "content": prompt},
@@ -180,20 +216,22 @@ class OpenAIProvider:
 
         for _round in range(max_rounds):
             try:
-                response = await client.chat.completions.create(
-                    model=self.model,
-                    max_completion_tokens=max_tokens or settings.llm_max_tokens,
-                    messages=messages,
-                    tools=tool_specs,
-                    response_format={
+                request: dict[str, Any] = {
+                    "model": self.model,
+                    "max_completion_tokens": max_tokens or settings.llm_max_tokens,
+                    "messages": messages,
+                    "tools": tool_specs,
+                }
+                if not settings.openai_base_url:
+                    request["response_format"] = {
                         "type": "json_schema",
                         "json_schema": {
                             "name": schema.get("title", "response").replace(" ", "_").lower(),
                             "schema": schema,
                             "strict": _strict_compatible(schema),
                         },
-                    },
-                )
+                    }
+                response = await self._create(client, **request)
             except Exception as exc:
                 raise LLMError(f"openai tool request failed: {exc}") from exc
 
@@ -207,17 +245,7 @@ class OpenAIProvider:
                     {
                         "role": "assistant",
                         "content": message.content,
-                        "tool_calls": [
-                            {
-                                "id": call.id,
-                                "type": "function",
-                                "function": {
-                                    "name": call.function.name,
-                                    "arguments": call.function.arguments,
-                                },
-                            }
-                            for call in message.tool_calls
-                        ],
+                        "tool_calls": [_echo_tool_call(call) for call in message.tool_calls],
                     }
                 )
                 for call in message.tool_calls:
@@ -247,7 +275,7 @@ class OpenAIProvider:
             if not text.strip():
                 raise LLMError("model returned neither a tool call nor content")
             try:
-                data = json.loads(text)
+                data = _parse_json(text)
             except json.JSONDecodeError as exc:
                 raise LLMError(f"tool-using response was not valid JSON: {exc}") from exc
 
@@ -262,6 +290,52 @@ class OpenAIProvider:
             )
 
         raise LLMError(f"model still requesting tools after {max_rounds} rounds")
+
+
+def _echo_tool_call(call) -> dict[str, Any]:
+    """A tool call as the assistant message that gets sent back to the model.
+
+    Gemini's OpenAI-compatible endpoint attaches a `thought_signature` under
+    `extra_content` and rejects the next turn with a 400 if it is not echoed back.
+    The SDK keeps unknown fields in `model_extra`, so they are carried through.
+    """
+    echoed: dict[str, Any] = {
+        "id": call.id,
+        "type": "function",
+        "function": {"name": call.function.name, "arguments": call.function.arguments},
+    }
+    extra = (getattr(call, "model_extra", None) or {}).get("extra_content")
+    if extra:
+        echoed["extra_content"] = extra
+    return echoed
+
+
+def _parse_json(text: str) -> Any:
+    """json.loads, tolerating the markdown fence or lead-in prose some vendors add."""
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        start, end = text.find("{"), text.rfind("}")
+        if start == -1 or end <= start:
+            raise
+        return json.loads(text[start : end + 1])
+
+
+def _rate_limit_wait(exc: Exception) -> float | None:
+    """Seconds to wait if `exc` is an HTTP 429, else None."""
+    if getattr(exc, "status_code", None) != 429:
+        return None
+    headers = getattr(getattr(exc, "response", None), "headers", None) or {}
+    retry_after = headers.get("retry-after")
+    if retry_after:
+        try:
+            return min(float(retry_after) + 0.5, 65.0)
+        except ValueError:
+            pass
+    match = re.search(r"try again in (?:(\d+)m)?([\d.]+)s", str(exc))
+    if match:
+        return min(int(match.group(1) or 0) * 60 + float(match.group(2)) + 0.5, 65.0)
+    return 10.0
 
 
 def _strict_compatible(schema: dict[str, Any]) -> bool:

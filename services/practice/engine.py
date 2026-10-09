@@ -42,7 +42,6 @@ from services.session.state import SessionState
 from services.speech import service as speech_service
 from services.speech.stt import get_stt_provider
 from services.speech.tts import (
-    MP3_BYTES_PER_SECOND,
     TTSError,
     estimate_seconds,
     get_tts_provider,
@@ -414,7 +413,9 @@ class PracticeRoom:
             f"You are {persona['name']}, taking part in a live spoken group discussion with "
             f"{self.student_name} (a student practising) and {others or 'nobody else'}.\n"
             f"Topic: {topic}\n\nYour persona:\n{persona['persona']}\n\n"
-            "Speak the way people really talk. No lists, markdown, stage directions or name "
+            "Speak the way people really talk, because your words are read out loud: short "
+            "sentences, contractions, the odd 'look', 'right' or 'see', and no "
+            "essay-style phrasing. No lists, markdown, stage directions or name "
             f"prefix. Keep it to at most {clock.MAX_WORDS.get(when.phase, 45)} words. React to "
             "what was just said. If the student has not spoken yet, open with a clear point of "
             "view. Stay aware of the clock: you may mention time naturally (for example 'we are "
@@ -499,7 +500,7 @@ class PracticeRoom:
                     )
             if self.barge.is_set():
                 return True
-            duration = total_bytes / MP3_BYTES_PER_SECOND if audio else estimate_seconds(text)
+            duration = total_bytes / tts.mp3_bytes_per_second if audio else estimate_seconds(text)
 
             # The browser starts playing on READY; from here the persona holds the floor.
             start = await self._live_clock()

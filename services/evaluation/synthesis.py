@@ -35,7 +35,9 @@ from services.llm.base import ToolDefinition
 
 logger = logging.getLogger(__name__)
 
-SYNTHESIS_PROMPT_VERSION = "1.0"
+SYNTHESIS_PROMPT_VERSION = "1.1"
+# The feedback is long-form; the default token cap would truncate its JSON.
+SYNTHESIS_MAX_TOKENS = 4000
 
 SYSTEM_PROMPT = """\
 You are the Final Synthesis agent in a group discussion evaluation system.
@@ -57,31 +59,152 @@ numbers a tool returned.
 3. Say what the dimensions mean *together*. "Strong content, weak \
 collaboration" is a pattern with a cause — name it. That is the value you add \
 over the individual reports.
-4. Give ONE priority improvement, the one that would matter most. Not a list of \
-five.
+4. `priority_improvement` is the ONE change that would matter most. \
+`focus_areas` is the short ordered plan (two or three items, most important \
+first) of what to work on, and its first item must match the priority.
 5. If the numbers look wrong to you — the score seems higher or lower than the \
 evidence justifies — say so in `caveat`. Flagging it is useful; silently \
 disagreeing is not. You cannot change the score and should not try.
 6. Address the candidate as "you". Be direct and specific. No praise sandwiches, \
 no filler.
+7. Make it personal to this candidate. Every strength and every focus area must \
+point at something this person actually said or did: quote a short phrase from \
+"YOUR OWN LINES" or cite a timestamp and a measured figure. Advice that could be \
+pasted into anyone else's report ("communicate more clearly", "listen actively") \
+is a failure.
+8. For each focus area, say what happened, why it cost them, and give a concrete \
+thing to do or say next time (for example the kind of sentence to open with), \
+not a trait to have. Where it helps, use `score_if` to say what it was worth.
+9. A line ending in "—" was cut off by another speaker; the candidate did not \
+trail off. Never fault someone for it. If it happened, it is context (they were \
+talked over), and the interruption counts in the measured behaviour show who was \
+doing the cutting.
+10. `try_saying` is an example of a move, so keep it generic. Do not put \
+invented statistics, studies or facts in it; only reuse figures that appear in \
+the input.
+11. Strengths are things to keep doing. Name what worked and why it helped the \
+discussion, not just that it was "good".
+12. Write for the candidate, who has not seen the scoring rubric. Use plain \
+language and full sentences, and explain any term you use (for example what \
+"collaboration" means in a group discussion) instead of assuming they know it. \
+Be descriptive: walk through what happened, then what it did to the discussion \
+and to how they came across, then what to do. Two to four sentences per field is \
+right; a bare phrase is too thin to learn from.
+13. For every dimension, explain in `dimension_notes` what that dimension \
+measures and what this candidate's score means for them, so the numbers in the \
+report are not a mystery.
 """
 
 RESPONSE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["summary", "pattern", "priority_improvement", "caveat"],
+    "required": [
+        "summary",
+        "pattern",
+        "priority_improvement",
+        "caveat",
+        "strengths",
+        "focus_areas",
+        "dimension_notes",
+    ],
     "properties": {
+        "dimension_notes": {
+            "type": "array",
+            "description": "One plain-language explanation per scored dimension.",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["dimension", "what_it_measures", "how_you_did"],
+                "properties": {
+                    "dimension": {"type": "string", "description": "The dimension name."},
+                    "what_it_measures": {
+                        "type": "string",
+                        "description": "One or two sentences on what it looks for.",
+                    },
+                    "how_you_did": {
+                        "type": "string",
+                        "description": "Two or three sentences on what their score means, "
+                        "with an example from their own lines.",
+                    },
+                },
+            },
+        },
+        "strengths": {
+            "type": "array",
+            "maxItems": 3,
+            "description": "Things this candidate did well and should keep doing.",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["point", "evidence", "why_it_helped"],
+                "properties": {
+                    "point": {"type": "string", "description": "The strength, in a phrase."},
+                    "evidence": {
+                        "type": "string",
+                        "description": "A short quote of theirs, or a timestamp and figure.",
+                    },
+                    "why_it_helped": {
+                        "type": "string",
+                        "description": "Two or three sentences on what it did for the discussion "
+                        "and how it made them come across.",
+                    },
+                },
+            },
+        },
+        "focus_areas": {
+            "type": "array",
+            "maxItems": 3,
+            "description": "What to work on, most important first.",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": [
+                    "area",
+                    "what_happened",
+                    "why_it_matters",
+                    "what_to_do",
+                    "try_saying",
+                    "practice",
+                ],
+                "properties": {
+                    "area": {"type": "string", "description": "The skill to work on, in a phrase."},
+                    "what_happened": {
+                        "type": "string",
+                        "description": "Two or three sentences on what they did, with a quote, "
+                        "timestamp or figure.",
+                    },
+                    "why_it_matters": {
+                        "type": "string",
+                        "description": "Two sentences on how this plays out in a real "
+                        "group discussion and what it costs the candidate.",
+                    },
+                    "what_to_do": {
+                        "type": "string",
+                        "description": "Two or three sentences on the concrete change to make.",
+                    },
+                    "try_saying": {
+                        "type": "string",
+                        "description": "An example sentence or move they could use.",
+                    },
+                    "practice": {
+                        "type": "string",
+                        "description": "A small exercise to do before the next "
+                        "discussion, in one or two sentences.",
+                    },
+                },
+            },
+        },
         "summary": {
             "type": "string",
-            "description": "Two or three sentences on the overall performance.",
+            "description": "Four to six sentences on the overall performance, in plain language.",
         },
         "pattern": {
             "type": "string",
-            "description": "What the dimension scores mean together, and why.",
+            "description": "Three or four sentences on what the scores mean together, and why.",
         },
         "priority_improvement": {
             "type": "string",
-            "description": "The single change that would matter most next time.",
+            "description": "Two sentences: the one change that matters most, and why.",
         },
         "caveat": {
             "type": "string",
@@ -102,6 +225,9 @@ class Synthesis:
     pattern: str
     priority_improvement: str
     caveat: str
+    strengths: list[dict[str, str]] = field(default_factory=list)
+    focus_areas: list[dict[str, str]] = field(default_factory=list)
+    dimension_notes: list[dict[str, str]] = field(default_factory=list)
     # Provenance: what the model asked the scoring tools and what it was told.
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     model: str = ""
@@ -227,6 +353,7 @@ def build_prompt(
     outputs: list[EvaluationOutput],
     metrics: CandidateMetrics,
     topic: str,
+    own_lines: list[str] | None = None,
 ) -> str:
     """Dimension verdicts plus measured behaviour. Deliberately no numbers for
     the overall score — that is what the tool is for."""
@@ -261,8 +388,39 @@ MEASURED BEHAVIOUR (computed in code from speech events — facts, not estimates
   questions asked      {metrics.questions}
   avg response latency {metrics.response_latency_seconds:.1f}s
 
+YOUR OWN LINES (what this candidate actually said, with timestamps)
+{chr(10).join(own_lines) if own_lines else "  (no transcript lines available)"}
+
 Call compute_final_score to get the actual score. Use score_if if you want to \
 quantify your advice. Then write the candidate's feedback."""
+
+
+MAX_OWN_LINES = 12
+MAX_LINE_CHARS = 280
+
+
+def own_lines_for(candidate_label: str, segments: list[Any]) -> list[str]:
+    """The candidate's own transcript lines, timestamped, so advice can quote them."""
+    lines = []
+    for seg in sorted(segments, key=lambda s: s.start):
+        if seg.candidate_id != candidate_label or not seg.text.strip():
+            continue
+        minutes, seconds = divmod(int(seg.start), 60)
+        lines.append(f'  {minutes:02d}:{seconds:02d} "{seg.text.strip()[:MAX_LINE_CHARS]}"')
+    if len(lines) > MAX_OWN_LINES:
+        lines = lines[: MAX_OWN_LINES // 2] + lines[-(MAX_OWN_LINES // 2) :]
+    return lines
+
+
+def _clean_items(raw: Any, keys: tuple[str, ...]) -> list[dict[str, str]]:
+    """Keep well-formed items only; a malformed one is dropped, never fatal."""
+    if not isinstance(raw, list):
+        return []
+    return [
+        {key: str(item.get(key, "")) for key in keys}
+        for item in raw
+        if isinstance(item, dict) and item.get(keys[0])
+    ]
 
 
 async def synthesise(
@@ -271,6 +429,7 @@ async def synthesise(
     weights: dict[str, float],
     metrics: CandidateMetrics,
     topic: str,
+    segments: list[Any] | None = None,
 ) -> Synthesis:
     """Run the synthesis agent for one candidate. Never raises.
 
@@ -286,9 +445,16 @@ async def synthesise(
     try:
         result = await provider.complete_with_tools(
             system=SYSTEM_PROMPT,
-            prompt=build_prompt(candidate_label, outputs, metrics, topic),
+            prompt=build_prompt(
+                candidate_label,
+                outputs,
+                metrics,
+                topic,
+                own_lines_for(candidate_label, segments or []),
+            ),
             tools=tools,
             schema=RESPONSE_SCHEMA,
+            max_tokens=SYNTHESIS_MAX_TOKENS,
         )
     except Exception as exc:
         # Deliberately broad: a synthesis failure must never fail the job, and
@@ -305,6 +471,14 @@ async def synthesise(
         pattern=str(data.get("pattern", "")),
         priority_improvement=str(data.get("priority_improvement", "")),
         caveat=str(data.get("caveat", "")),
+        strengths=_clean_items(data.get("strengths"), ("point", "evidence", "why_it_helped")),
+        focus_areas=_clean_items(
+            data.get("focus_areas"),
+            ("area", "what_happened", "why_it_matters", "what_to_do", "try_saying", "practice"),
+        ),
+        dimension_notes=_clean_items(
+            data.get("dimension_notes"), ("dimension", "what_it_measures", "how_you_did")
+        ),
         tool_calls=[
             {"tool": call.name, "arguments": call.arguments, "result": call.result}
             for call in result.tool_calls

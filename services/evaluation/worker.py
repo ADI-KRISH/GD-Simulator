@@ -87,6 +87,9 @@ async def _run_queued(session: AsyncSession, queued: queue.QueuedJob) -> bool:
 
 async def _run_job(session: AsyncSession, job: EvaluationJob) -> bool:
     """Run one job, recording a failure on a fresh session. True on success."""
+    # Read before any rollback: a rollback expires the row, and touching an expired
+    # attribute afterwards triggers a lazy load that async SQLAlchemy cannot do.
+    job_id = job.id
     try:
         await service.run_job(session, job)
         await session.commit()
@@ -94,11 +97,11 @@ async def _run_job(session: AsyncSession, job: EvaluationJob) -> bool:
     except Exception as exc:
         await session.rollback()
         async with SessionFactory() as fresh:
-            failed = await repo.get_job(fresh, job.id)
+            failed = await repo.get_job(fresh, job_id)
             if failed is not None:
                 await service.fail_job(fresh, failed, str(exc))
                 await fresh.commit()
-        logger.exception("evaluation job raised", extra={"job_id": str(job.id)})
+        logger.exception("evaluation job raised", extra={"job_id": str(job_id)})
         return False
 
 

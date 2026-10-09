@@ -75,7 +75,8 @@ class Settings(BaseSettings):
     # Per-persona voice overrides as JSON, e.g. {"bhavana": "<voice_id>"}.
     persona_voices: dict[str, str] = Field(default_factory=dict)
     elevenlabs_stt_model: str = "scribe_v1"
-    # auto | elevenlabs | stub
+    # auto | elevenlabs | edge | stub. `auto` uses ElevenLabs when a key is set, else the
+    # browser voices; `edge` is the free Microsoft Edge neural voices (no key).
     tts_provider: str = "auto"
 
     # --- LLM layer (design §54) ---
@@ -87,12 +88,18 @@ class Settings(BaseSettings):
     # OPENAI_API_KEY into .env should not have to discover a second name.
     llm_api_key: str = ""
     openai_api_key: str = ""
+    # Any OpenAI-compatible endpoint (Groq, Gemini, OpenRouter, Ollama...). Empty = OpenAI.
+    openai_base_url: str = ""
     anthropic_api_key: str = ""
     # Faster model for the practice personas' short spoken lines (empty = LLM_MODEL).
     persona_llm_model: str = ""
     llm_max_tokens: int = 2048
     llm_timeout_seconds: float = 60.0
     llm_max_retries: int = 3
+    # Max LLM requests in flight at once; 0 = unlimited. Set 1-2 on small free tiers.
+    llm_max_concurrency: int = 0
+    # Give simulated (AI) participants spoken voices when a TTS provider can make audio.
+    sim_voices: bool = True
 
     # --- Orchestration engine ---
     # langgraph | native. `langgraph` runs the evaluation workflow as a

@@ -32,6 +32,8 @@ class ServerEvent(StrEnum):
     PERSONA_AUDIO_END = "PERSONA_AUDIO_END"
     PERSONA_AUDIO_FALLBACK = "PERSONA_AUDIO_FALLBACK"
     STOP_AUDIO = "STOP_AUDIO"
+    # A simulated participant's spoken line (mp3, base64) for the room to play.
+    AGENT_AUDIO = "AGENT_AUDIO"
     TIMER_STARTED = "TIMER_STARTED"
     TIMER_UPDATED = "TIMER_UPDATED"
     SESSION_STARTED = "SESSION_STARTED"
