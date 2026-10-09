@@ -13,6 +13,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { playAgentAudio } from "./agent-audio";
 import { API_URL, tokenStore } from "./api";
 import type { LobbyView, TimerView, TopicView } from "./types";
 
@@ -133,6 +134,11 @@ export function useSessionSocket(sessionId: string | null) {
         try {
           frame = JSON.parse(message.data);
         } catch {
+          return;
+        }
+        if (frame.type === "AGENT_AUDIO") {
+          // Played, not stored: the payload is a whole spoken line.
+          playAgentAudio(String(frame.payload.audio_b64 ?? ""));
           return;
         }
         setState((prev) => apply(prev, frame));

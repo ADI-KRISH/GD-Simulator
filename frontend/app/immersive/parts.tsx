@@ -48,7 +48,11 @@ export function Orb({ seat, children }: { seat: SeatInfo; children?: ReactNode }
   );
 }
 
-/** Seats around an ellipse. The viewer, if present, sits at the bottom. */
+/**
+ * Everyone in the room as a tile. There is no video here, so each tile is an
+ * avatar; the one holding the floor gets a ring and live level bars. The caption
+ * under the grid is whatever was said last.
+ */
 export function RoundTable({
   seats,
   centre,
@@ -57,30 +61,36 @@ export function RoundTable({
   centre?: ReactNode;
 }) {
   const ordered = [...seats].sort((a, b) => Number(!!b.you) - Number(!!a.you));
-  const n = ordered.length;
   return (
-    <div className="table">
-      <div className="table-centre">{centre}</div>
-      {ordered.map((seat, index) => {
-        // Index 0 (the viewer) at 90deg = bottom; the rest fan out clockwise.
-        const angle = (Math.PI / 2 + (index * 2 * Math.PI) / Math.max(n, 1)) % (2 * Math.PI);
-        const x = 50 + 43 * Math.cos(angle);
-        const y = 50 + 40 * Math.sin(angle);
-        return (
+    <div className="stage-wrap">
+      <div className="tiles" data-count={Math.min(ordered.length, 6)}>
+        {ordered.map((seat) => (
           <div
             key={seat.label}
-            className={`seat ${seat.speaking ? "seat--speaking" : ""} ${seat.away ? "seat--away" : ""}`}
-            style={{ left: `${x}%`, top: `${y}%` }}
+            className={`vtile ${seat.speaking ? "vtile--speaking" : ""} ${seat.away ? "vtile--away" : ""}`}
+            style={{ "--h": seat.hue ?? hueFor(seat.label) } as CSSProperties}
           >
             <Orb seat={seat} />
-            <div className="seat-name">
-              {seat.name}
-              {seat.you ? " (you)" : ""}
+            <div className="vtile-label">
+              {seat.speaking ? (
+                <span className="eq" aria-label="speaking">
+                  <i />
+                  <i />
+                  <i />
+                </span>
+              ) : (
+                <span className="vtile-dot" aria-hidden />
+              )}
+              <span className="vtile-name">
+                {seat.name}
+                {seat.you ? " (you)" : ""}
+              </span>
+              {!seat.speaking && seat.sub && <small>{seat.sub}</small>}
             </div>
-            <div className="seat-sub">{seat.speaking ? "speaking" : seat.sub}</div>
           </div>
-        );
-      })}
+        ))}
+      </div>
+      <div className="caption-bar">{centre}</div>
     </div>
   );
 }
@@ -161,18 +171,31 @@ export function ArenaHeader({
   warn?: boolean;
   right?: ReactNode;
 }) {
+  const clock = `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
+  const total = `${String(Math.floor(duration / 60)).padStart(2, "0")}:${String(Math.floor(duration % 60)).padStart(2, "0")}`;
   return (
     <header className="arena-head">
       <div className="arena-topic">
-        <span className={`arena-phase ${live ? "arena-phase--live" : ""}`}>
-          <i />
-          {phaseLabel}
-        </span>
-        <h1>{topic}</h1>
+        <div className="arena-title">
+          <h1>Group Discussion</h1>
+          <span className={`arena-phase ${live ? "arena-phase--live" : ""}`}>
+            <i />
+            {phaseLabel}
+          </span>
+        </div>
+        <p className="arena-sub">{topic}</p>
       </div>
-      <div className="row" style={{ gap: "1rem" }}>
+      <div className="arena-tools">
         {right}
-        <RingClock seconds={seconds} duration={duration} warn={warn} />
+        <span
+          className={`timer-pill ${warn ? "timer-pill--warn" : ""}`}
+          role="timer"
+          aria-label={`${clock} remaining of ${Math.round(duration / 60)} minutes`}
+        >
+          {live && <i className="rec" aria-hidden />}
+          {clock}
+          {duration > 0 && <small> / {total}</small>}
+        </span>
       </div>
     </header>
   );

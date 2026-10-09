@@ -224,6 +224,17 @@ export interface SynthesisBody {
   pattern: string;
   priority_improvement: string;
   caveat: string;
+  /** Absent on reports stored before personalised feedback existed. */
+  strengths?: { point: string; evidence: string; why_it_helped: string }[];
+  focus_areas?: {
+    area: string;
+    what_happened: string;
+    why_it_matters?: string;
+    what_to_do: string;
+    try_saying: string;
+    practice?: string;
+  }[];
+  dimension_notes?: { dimension: string; what_it_measures: string; how_you_did: string }[];
   tool_calls: { tool: string; arguments: Record<string, unknown>; result: unknown }[];
   model: string;
   error: string | null;

@@ -10,6 +10,8 @@
 
 import { useState } from "react";
 
+import { Select } from "@/app/select";
+
 import { ApiError, sessions } from "@/lib/api";
 import type { AgentSpec } from "@/lib/types";
 
@@ -106,20 +108,18 @@ export function AgentsPanel({
                   style={{ maxWidth: "12rem" }}
                   required
                 />
-                <select
-                  aria-label={`Agent ${index + 1} talkativeness`}
-                  value={agent.talkativeness}
-                  onChange={(e) =>
-                    update(index, {
-                      talkativeness: e.target.value as AgentSpec["talkativeness"],
-                    })
-                  }
-                  style={{ maxWidth: "11rem" }}
-                >
-                  <option value="low">Speaks rarely</option>
-                  <option value="medium">Speaks sometimes</option>
-                  <option value="high">Speaks a lot</option>
-                </select>
+                <div style={{ width: "11.5rem" }}>
+                  <Select<AgentSpec["talkativeness"]>
+                    aria-label={`Agent ${index + 1} talkativeness`}
+                    value={agent.talkativeness}
+                    onChange={(talkativeness) => update(index, { talkativeness })}
+                    options={[
+                      { value: "low", label: "Speaks rarely" },
+                      { value: "medium", label: "Speaks sometimes" },
+                      { value: "high", label: "Speaks a lot" },
+                    ]}
+                  />
+                </div>
                 <button
                   type="button"
                   className="secondary"

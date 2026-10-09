@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
 import { Orb, hueFor } from "@/app/immersive/parts";
+import { Select } from "@/app/select";
 import { ApiError, practice } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import type { PersonaPreset } from "@/lib/types";
@@ -116,28 +117,32 @@ export default function NewPracticePage() {
         <div className="grid">
           <div className="field">
             <label htmlFor="minutes">Length</label>
-            <select id="minutes" value={minutes} onChange={(e) => setMinutes(Number(e.target.value))}>
-              {[3, 5, 8, 10, 15].map((m) => (
-                <option key={m} value={m}>
-                  {m} minutes
-                </option>
-              ))}
-            </select>
+            <Select<number>
+              id="minutes"
+              value={minutes}
+              onChange={setMinutes}
+              options={[3, 5, 8, 10, 15].map((m) => ({ value: m, label: `${m} minutes` }))}
+            />
           </div>
           <div className="field">
             <label htmlFor="difficulty">Difficulty</label>
-            <select id="difficulty" value={difficulty} onChange={(e) => setDifficulty(e.target.value)}>
-              <option value="beginner">Beginner</option>
-              <option value="intermediate">Intermediate</option>
-              <option value="advanced">Advanced</option>
-            </select>
+            <Select<string>
+              id="difficulty"
+              value={difficulty}
+              onChange={setDifficulty}
+              options={[
+                { value: "beginner", label: "Beginner" },
+                { value: "intermediate", label: "Intermediate" },
+                { value: "advanced", label: "Advanced" },
+              ]}
+            />
           </div>
         </div>
 
         <p className="arena-hint" style={{ textAlign: "left" }}>
           {voice === "elevenlabs"
-            ? "Personas speak with ElevenLabs voices."
-            : "No ElevenLabs key is set, so your browser reads the personas aloud. Add ELEVENLABS_API_KEY to .env for natural voices."}{" "}
+            ? "Each persona speaks in their own voice."
+            : "No voice service is configured, so your browser reads the personas aloud. Set TTS_PROVIDER=edge in .env for natural voices."}{" "}
           Use headphones so the personas&rsquo; voices do not trigger your microphone.
         </p>
 

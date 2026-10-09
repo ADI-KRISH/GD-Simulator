@@ -4,6 +4,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
+import { Select } from "@/app/select";
+
 import { ApiError, request, tokenStore, type TokenPair } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 
@@ -20,7 +22,7 @@ export default function RegisterPage() {
   const [busy, setBusy] = useState(false);
 
   function update(field: keyof typeof form) {
-    return (event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
+    return (event: React.ChangeEvent<HTMLInputElement>) =>
       setForm((prev) => ({ ...prev, [field]: event.target.value }));
   }
 
@@ -85,10 +87,15 @@ export default function RegisterPage() {
         </div>
         <div className="field">
           <label htmlFor="role">Account type</label>
-          <select id="role" value={form.role} onChange={update("role")}>
-            <option value="candidate">Candidate — join discussions</option>
-            <option value="host">Host — create discussions</option>
-          </select>
+          <Select<"candidate" | "host">
+            id="role"
+            value={form.role}
+            onChange={(role) => setForm((prev) => ({ ...prev, role }))}
+            options={[
+              { value: "candidate", label: "Candidate: join discussions" },
+              { value: "host", label: "Host: create discussions" },
+            ]}
+          />
         </div>
         <button type="submit" disabled={busy} style={{ width: "100%" }}>
           {busy ? "Creating…" : "Create account"}

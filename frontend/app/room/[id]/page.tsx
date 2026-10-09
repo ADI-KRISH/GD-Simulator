@@ -16,14 +16,21 @@
  */
 
 import { useParams, useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
-import { ArenaHeader, Notices, RoundTable, type SeatInfo } from "@/app/immersive/parts";
+import {
+  ArenaHeader,
+  hueFor,
+  Notices,
+  RoundTable,
+  type SeatInfo,
+} from "@/app/immersive/parts";
+import { Icon, type IconName } from "@/app/icons";
 import { ObserverCard } from "@/app/observer-card";
-import { TranscriptCard } from "@/app/transcript-card";
 import { ApiError, sessions } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { useMediaRoom } from "@/lib/use-media-room";
+import { useAgentVoicesMuted } from "@/lib/agent-audio";
 import { useSessionSocket } from "@/lib/use-session-socket";
 import type { GDSession, MediaToken, TranscriptOut } from "@/lib/types";
 
@@ -36,8 +43,12 @@ export default function RoomPage() {
   const [credentials, setCredentials] = useState<MediaToken | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [ending, setEnding] = useState(false);
+  const [tab, setTab] = useState<"transcript" | "people" | "observer">("transcript");
+  const [notes, setNotes] = useNotes(id);
+  const feedRef = useRef<HTMLDivElement | null>(null);
 
   const socket = useSessionSocket(id ?? null);
+  const [voicesMuted, setVoicesMuted] = useAgentVoicesMuted();
 
   const load = useCallback(async () => {
     try {
@@ -95,6 +106,12 @@ export default function RoomPage() {
       .then(setTranscript)
       .catch(() => {}); // Display-only; the report shows the full transcript later.
   }, [isLive, latestFrame, id]);
+
+  // Keep the feed pinned to the newest line.
+  const lineCount = transcript?.lines.length ?? 0;
+  useEffect(() => {
+    if (feedRef.current) feedRef.current.scrollTop = feedRef.current.scrollHeight;
+  }, [lineCount, tab]);
 
   // When the session ends, everyone moves to the report together.
   useEffect(() => {
@@ -173,100 +190,256 @@ export default function RoomPage() {
         }
       />
 
-      <div>
-        <RoundTable
-          seats={seats}
-          centre={
-            latest ? (
+      <div className="room-grid">
+        <div className="room-main">
+          <RoundTable
+            seats={seats}
+            centre={
+              latest ? (
+                <>
+                  <span className="caption-who">{nameOf(latest.candidate_label)}</span>
+                  <span className="caption-now">{latest.text}</span>
+                </>
+              ) : (
+                <span>
+                  {observing
+                    ? "You are hosting: watching, not recorded or evaluated."
+                    : isLive
+                      ? "Nobody has spoken yet."
+                      : "The discussion opens when preparation ends."}
+                </span>
+              )
+            }
+          />
+          <Notices notices={socket.notices} nameOf={nameOf} />
+
+          {error && <div className="alert alert--error">{error}</div>}
+          {/* A watching host publishes nothing, so a missing media server (e.g. no
+              LiveKit when running without Docker) is not their problem to see. */}
+          {media.error && !observing && <div className="alert alert--error">Media: {media.error}</div>}
+          {media.uploadError && !observing && (
+            <div className="alert alert--error">
+              Transcription upload failed ({media.uploadError}). The discussion is unaffected — the
+              audio is retried server-side.
+            </div>
+          )}
+
+          {hasVideo && (
+            <div className="video-strip">
+              {!observing && (
+                <div className="video-self">
+                  <video
+                    ref={media.localVideoRef}
+                    className="remote-video"
+                    autoPlay
+                    muted
+                    playsInline
+                    style={{ transform: "scaleX(-1)", opacity: media.cameraEnabled ? 1 : 0.15 }}
+                  />
+                  <span className="meta">You{media.micEnabled ? "" : " (muted)"}</span>
+                </div>
+              )}
+              <div id="remote-media" className="video-remote" />
+            </div>
+          )}
+
+          <div className="controls">
+            {!observing && hasVideo && (
               <>
-                <p className="caption-who">{nameOf(latest.candidate_label)}</p>
-                <p className="caption-now">{latest.text}</p>
-              </>
-            ) : (
-              <p>
-                {observing
-                  ? "You are hosting: watching, not recorded or evaluated."
-                  : isLive
-                    ? "Nobody has spoken yet."
-                    : "The discussion opens when preparation ends."}
-              </p>
-            )
-          }
-        />
-        <Notices notices={socket.notices} nameOf={nameOf} />
-      </div>
-
-      <div className="stack" style={{ gap: "0.7rem" }}>
-        {error && <div className="alert alert--error">{error}</div>}
-        {/* A watching host publishes nothing, so a missing media server (e.g. no
-            LiveKit when running without Docker) is not their problem to see. */}
-        {media.error && !observing && <div className="alert alert--error">Media: {media.error}</div>}
-        {media.uploadError && (
-          <div className="alert alert--error">
-            Transcription upload failed ({media.uploadError}). The discussion is unaffected — the
-            audio is retried server-side.
-          </div>
-        )}
-
-        {hasVideo && (
-          <div className="video-strip">
-            {!observing && (
-              <div className="video-self">
-                <video
-                  ref={media.localVideoRef}
-                  className="remote-video"
-                  autoPlay
-                  muted
-                  playsInline
-                  style={{ transform: "scaleX(-1)", opacity: media.cameraEnabled ? 1 : 0.15 }}
+                <ControlButton
+                  icon={media.micEnabled ? "mic" : "mic-off"}
+                  label={media.micEnabled ? "Mute" : "Unmute"}
+                  pressed={!media.micEnabled}
+                  disabled={!media.connected}
+                  onClick={media.toggleMic}
                 />
-                <span className="meta">You{media.micEnabled ? "" : " (muted)"}</span>
-              </div>
+                <ControlButton
+                  icon={media.cameraEnabled ? "video" : "video-off"}
+                  label={media.cameraEnabled ? "Stop video" : "Start video"}
+                  pressed={!media.cameraEnabled}
+                  disabled={!media.connected}
+                  onClick={media.toggleCamera}
+                />
+              </>
             )}
-            <div id="remote-media" className="video-remote" />
+            <ControlButton
+              icon="users"
+              label="Participants"
+              pressed={tab === "people"}
+              onClick={() => setTab("people")}
+            />
+            <ControlButton
+              icon="chat"
+              label="Transcript"
+              pressed={tab === "transcript"}
+              onClick={() => setTab("transcript")}
+            />
+            <ControlButton
+              icon={voicesMuted ? "volume-off" : "volume"}
+              label="AI voices"
+              pressed={voicesMuted}
+              title="Spoken lines from AI participants"
+              onClick={() => setVoicesMuted(!voicesMuted)}
+            />
           </div>
-        )}
-
-        {!observing && hasVideo && (
-          <div className="arena-foot">
-            <button
-              type="button"
-              className="arena-btn"
-              onClick={media.toggleMic}
-              disabled={!media.connected}
-              aria-pressed={!media.micEnabled}
-            >
-              {media.micEnabled ? "Mute" : "Unmute"}
-            </button>
-            <button
-              type="button"
-              className="arena-btn"
-              onClick={media.toggleCamera}
-              disabled={!media.connected}
-              aria-pressed={!media.cameraEnabled}
-            >
-              {media.cameraEnabled ? "Turn camera off" : "Turn camera on"}
-            </button>
-            <span className="arena-hint">
+          {!observing && hasVideo && (
+            <p className="arena-hint" style={{ margin: 0, textAlign: "center" }}>
               {media.connected
                 ? `Connected. ${media.uploadedChunks} audio window${media.uploadedChunks === 1 ? "" : "s"} sent for transcription.`
                 : media.connecting
                   ? "Connecting…"
                   : "Media offline."}
-            </span>
-          </div>
-        )}
+            </p>
+          )}
+        </div>
 
-        {isLive && (
-          <details className="arena-drawer">
-            <summary>Transcript and live observations</summary>
-            <div className="split">
-              {transcript && <TranscriptCard transcript={transcript} live />}
-              <ObserverCard sessionId={id} />
-            </div>
-          </details>
-        )}
+        <aside className="side-panel">
+          <div className="tabs" role="tablist">
+            {(
+              [
+                ["transcript", "Live transcript"],
+                ["people", "Participants"],
+                ["observer", "Observer"],
+              ] as const
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                role="tab"
+                aria-selected={tab === key}
+                className={`tab ${tab === key ? "tab--on" : ""}`}
+                onClick={() => setTab(key)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          <div className="side-body" ref={feedRef}>
+            {tab === "transcript" &&
+              (lines.length === 0 ? (
+                <p className="empty">
+                  {isLive ? "Lines appear here as people speak." : "The transcript starts when the discussion does."}
+                </p>
+              ) : (
+                <ul className="feed">
+                  {lines.map((line, index) => {
+                    const speaker = seats.find((x) => x.label === line.candidate_label);
+                    return (
+                      <li key={index}>
+                        <span
+                          className="feed-avatar"
+                          style={{ "--h": hueFor(line.candidate_label) } as React.CSSProperties}
+                        >
+                          {nameOf(line.candidate_label).slice(0, 1).toUpperCase()}
+                        </span>
+                        <div>
+                          <div className="feed-meta">
+                            <strong>
+                              {nameOf(line.candidate_label)}
+                              {speaker?.you ? " (you)" : ""}
+                            </strong>
+                            <time>{line.timestamp}</time>
+                          </div>
+                          <p>{line.text}</p>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              ))}
+
+            {tab === "people" && (
+              <ul className="people">
+                {seats.map((seat) => (
+                  <li key={seat.label} className={seat.away ? "person--away" : ""}>
+                    <span
+                      className="feed-avatar"
+                      style={{ "--h": hueFor(seat.label) } as React.CSSProperties}
+                    >
+                      {seat.name.slice(0, 1).toUpperCase()}
+                    </span>
+                    <span className="person-name">
+                      {seat.name}
+                      {seat.you && " (you)"}
+                      {seat.badge && <span className="badge">{seat.badge}</span>}
+                    </span>
+                    <span className={`chip ${seat.speaking ? "chip--ok" : seat.away ? "chip--away" : "chip--info"}`}>
+                      {seat.speaking ? "Speaking" : seat.away ? "Away" : "Listening"}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {tab === "observer" && <ObserverCard sessionId={id} />}
+          </div>
+
+          <label className="notes">
+            <span className="meta">Your notes (only on this device)</span>
+            <textarea
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="Jot down points to build on…"
+              rows={3}
+            />
+          </label>
+        </aside>
       </div>
     </div>
   );
+}
+
+function ControlButton({
+  icon,
+  label,
+  pressed,
+  disabled,
+  title,
+  onClick,
+}: {
+  icon: IconName;
+  label: string;
+  pressed?: boolean;
+  disabled?: boolean;
+  title?: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="ctl-round"
+      aria-pressed={pressed}
+      disabled={disabled}
+      title={title}
+      onClick={onClick}
+    >
+      <span className="ctl-ico">
+        <Icon name={icon} size={22} />
+      </span>
+      <span className="ctl-label">{label}</span>
+    </button>
+  );
+}
+
+/** Private notes for this discussion, kept in the browser and never sent anywhere. */
+function useNotes(sessionId: string): [string, (value: string) => void] {
+  const key = `gd-notes-${sessionId}`;
+  const [value, setValue] = useState("");
+  useEffect(() => {
+    try {
+      setValue(window.localStorage.getItem(key) ?? "");
+    } catch {
+      // Storage can be unavailable; notes then last only while the page is open.
+    }
+  }, [key]);
+  const update = (next: string) => {
+    setValue(next);
+    try {
+      window.localStorage.setItem(key, next);
+    } catch {
+      // Ignored for the same reason.
+    }
+  };
+  return [value, update];
 }

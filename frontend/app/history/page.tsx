@@ -11,6 +11,8 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
+import { Icon } from "@/app/icons";
+import { AnimatedBar, CountUp, Skeleton } from "@/app/motion";
 import { ApiError, evaluation } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import type { HistoryOut } from "@/lib/types";
@@ -42,85 +44,109 @@ export default function HistoryPage() {
   if (loading) return <p className="empty">Loading…</p>;
   if (!user) return <p className="empty">Sign in to see your performance.</p>;
   if (error) return <div className="alert alert--error">{error}</div>;
-  if (!history) return <p className="empty">Loading your history…</p>;
+  if (!history) return <Skeleton rows={3} tall />;
 
   const dimensions = Object.entries(history.trend).sort(([, a], [, b]) => a - b);
   const weakest = dimensions[0];
+  const tone = (score: number) => (score >= 70 ? "good" : score >= 50 ? "mid" : "low");
 
   return (
-    <div className="stack">
-      <div className="card">
-        <h1>Your performance</h1>
-        <p className="subtitle">Across every discussion you have completed.</p>
+    <div className="stack" style={{ gap: "1.25rem" }}>
+      <header className="page-head">
+        <h1>Past sessions</h1>
+        <p>View your previous group discussions and feedback.</p>
+      </header>
 
-        <div className="grid">
+      <div className="stat-row">
+        <div className="card stat">
+          <span className="tile-icon" aria-hidden>
+            <Icon name="users" size={22} />
+          </span>
           <div>
-            <dt>Discussions completed</dt>
-            <dd style={{ fontSize: "1.6rem" }}>{history.sessions_completed}</dd>
+            <small>Discussions completed</small>
+            <strong>
+              <CountUp value={history.sessions_completed} />
+            </strong>
           </div>
-          <div>
-            <dt>Average overall</dt>
-            <dd style={{ fontSize: "1.6rem" }}>
-              {history.average_overall !== null ? history.average_overall.toFixed(1) : "—"}
-            </dd>
-          </div>
-          {weakest && (
-            <div>
-              <dt>Weakest dimension</dt>
-              <dd style={{ fontSize: "1.6rem" }}>
-                {DIMENSION_LABELS[weakest[0]] ?? weakest[0]}
-              </dd>
-            </div>
-          )}
         </div>
+        <div className="card stat">
+          <span className="tile-icon tile-icon--teal" aria-hidden>
+            <Icon name="chart" size={22} />
+          </span>
+          <div>
+            <small>Average overall</small>
+            <strong>
+              {history.average_overall !== null ? (
+                <CountUp value={history.average_overall} />
+              ) : (
+                "–"
+              )}
+            </strong>
+          </div>
+        </div>
+        {weakest && (
+          <div className="card stat">
+            <span className="tile-icon tile-icon--amber" aria-hidden>
+              <Icon name="target" size={22} />
+            </span>
+            <div>
+              <small>Weakest skill</small>
+              <strong>{DIMENSION_LABELS[weakest[0]] ?? weakest[0]}</strong>
+            </div>
+          </div>
+        )}
       </div>
 
       {dimensions.length > 0 && (
-        <div className="card">
-          <h2 style={{ fontSize: "1.05rem", margin: "0 0 0.9rem" }}>Average by dimension</h2>
+        <section className="card">
+          <h2 className="section-title">Average by skill</h2>
           {dimensions.map(([dimension, value]) => (
-            <div key={dimension} style={{ marginBottom: "0.8rem" }}>
-              <div className="row row--between">
-                <span style={{ fontSize: "0.9rem" }}>
-                  {DIMENSION_LABELS[dimension] ?? dimension}
-                </span>
-                <span className="meta">{value.toFixed(1)}/10</span>
-              </div>
-              <div className="bar" style={{ marginTop: "0.3rem" }}>
-                <span style={{ width: `${Math.min(100, value * 10)}%` }} />
-              </div>
+            <div key={dimension} className="score-row">
+              <span>{DIMENSION_LABELS[dimension] ?? dimension}</span>
+              <AnimatedBar value={value * 10} tone={tone(value * 10)} />
+              <strong>{Math.round(value * 10)}</strong>
             </div>
           ))}
-        </div>
+        </section>
       )}
 
-      <div className="card">
-        <h2 style={{ fontSize: "1.05rem", margin: "0 0 0.9rem" }}>Sessions</h2>
+      <section>
+        <h2 className="section-title">Sessions</h2>
         {history.entries.length === 0 ? (
-          <p className="empty">You have not completed any discussions yet.</p>
+          <div className="card">
+            <p className="empty">
+              You have not completed any discussions yet. Start one from Group Discussion.
+            </p>
+          </div>
         ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>Topic</th>
-                <th>Score</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {history.entries.map((entry) => (
-                <tr key={entry.session_id}>
-                  <td>{entry.topic}</td>
-                  <td>{entry.overall.toFixed(1)}</td>
-                  <td style={{ textAlign: "right" }}>
-                    <Link href={`/report/${entry.session_id}`}>Report</Link>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <ul className="past-list">
+            {history.entries.map((entry) => (
+              <li key={entry.session_id} className="past-item">
+                <span className="tile-icon" aria-hidden>
+                  <Icon name="chat" size={20} />
+                </span>
+                <div className="past-main">
+                  <strong>{entry.topic}</strong>
+                  <small>
+                    <Icon name="calendar" size={14} />{" "}
+                    {new Date(entry.created_at).toLocaleDateString(undefined, {
+                      day: "numeric",
+                      month: "short",
+                      year: "numeric",
+                    })}
+                  </small>
+                </div>
+                <span className={`score-pill score--${tone(entry.overall)}`}>
+                  {Math.round(entry.overall)}
+                </span>
+                <Link href={`/report/${entry.session_id}`} className="view-link">
+                  View report <Icon name="arrow-right" size={14} />
+                </Link>
+              </li>
+            ))}
+          </ul>
         )}
-      </div>
+      </section>
     </div>
   );
 }

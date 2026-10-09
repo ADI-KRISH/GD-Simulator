@@ -4,6 +4,8 @@
 
 import { useState } from "react";
 
+import { Select } from "@/app/select";
+
 import { ApiError, api, type ExperienceLevel } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 
@@ -88,17 +90,12 @@ export default function ProfilePage() {
           </div>
           <div className="field">
             <label htmlFor="level">Experience level</label>
-            <select
+            <Select<ExperienceLevel>
               id="level"
               value={levelValue}
-              onChange={(e) => setLevel(e.target.value as ExperienceLevel)}
-            >
-              {LEVELS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
+              onChange={setLevel}
+              options={LEVELS}
+            />
           </div>
           <button type="submit" disabled={busy}>
             {busy ? "Saving…" : "Save profile"}

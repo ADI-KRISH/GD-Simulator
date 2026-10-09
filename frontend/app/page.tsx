@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
+import { Icon, type IconName } from "@/app/icons";
 import { ApiError, lobbies, sessions } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import type { SessionSummary } from "@/lib/types";
@@ -23,19 +24,19 @@ function destination(session: SessionSummary): string {
   }
 }
 
-const FEATURES = [
+const FEATURES: { icon: IconName; title: string; text: string }[] = [
   {
-    icon: "🎙️",
+    icon: "mic",
     title: "Live group discussions",
     text: "Candidates join with a code and discuss over audio and video, with a shared timer and topic released at the same moment for everyone.",
   },
   {
-    icon: "👁️",
+    icon: "eye",
     title: "An Observer that never scores",
     text: "While people talk, an Observer agent keeps running notes on arguments, positions and dynamics — observations only, never verdicts.",
   },
   {
-    icon: "⚖️",
+    icon: "scale",
     title: "Evidence-backed evaluation",
     text: "Specialist agents score content, communication, leadership, collaboration and behaviour, each citing the transcript. The final number is computed in code.",
   },
@@ -109,7 +110,7 @@ export default function HomePage() {
           {FEATURES.map((feature) => (
             <div key={feature.title} className="card feature">
               <div className="feature-icon" aria-hidden>
-                {feature.icon}
+                <Icon name={feature.icon} size={22} />
               </div>
               <h3>{feature.title}</h3>
               <p>{feature.text}</p>
@@ -121,24 +122,46 @@ export default function HomePage() {
   }
 
   const isHostRole = user.role !== "candidate";
+  const hour = new Date().getHours();
+  const greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
 
   return (
-    <div className="stack fade-in">
-      <div className="card">
-        <div className="dashboard-hero">
-          <div>
-            <span className="eyebrow">{user.role}</span>
-            <h1 style={{ marginTop: "0.7rem" }}>
-              Welcome back, <span className="gradient-text">{user.full_name.split(" ")[0]}</span>
-            </h1>
-            <p className="subtitle" style={{ marginBottom: 0 }}>
-              {isHostRole
-                ? "Open a lobby, practice with AI, or join one with a code."
-                : "Join a discussion with the code your host gave you."}
-            </p>
-          </div>
-          <form onSubmit={handleJoin}>
-            <label htmlFor="join-code">Have a code?</label>
+    <div className="stack fade-in" style={{ gap: "1.5rem" }}>
+      <header className="page-head">
+        <h1>
+          {greeting}, {user.full_name.split(" ")[0]}
+        </h1>
+        <p>Improve your communication, critical thinking and teamwork with AI-powered evaluations.</p>
+      </header>
+
+      <section className="options" aria-label="Start a discussion">
+        <article className="option">
+          <span className="tile-icon tile-icon--lg" aria-hidden>
+            <Icon name="users" size={26} />
+          </span>
+          <h2>{isHostRole ? "Create a lobby" : "Find a lobby"}</h2>
+          <p>
+            {isHostRole
+              ? "Invite your friends and start a private discussion. Each participant gets individual feedback."
+              : "Join a discussion another student opened. Each participant gets individual feedback."}
+          </p>
+          <Link href={isHostRole ? "/sessions/new" : "/lobbies"} className="option-cta">
+            <button type="button">
+              {isHostRole ? "Create lobby" : "Browse lobbies"} <Icon name="arrow-right" size={16} />
+            </button>
+          </Link>
+        </article>
+
+        <article className="option">
+          <span className="tile-icon tile-icon--lg tile-icon--teal" aria-hidden>
+            <Icon name="user-plus" size={26} />
+          </span>
+          <h2>Join a lobby</h2>
+          <p>Enter the lobby code your host shared with you.</p>
+          <form onSubmit={handleJoin} className="option-cta">
+            <label htmlFor="join-code" className="sr-only">
+              Lobby code
+            </label>
             <div className="join-box">
               <input
                 id="join-code"
@@ -159,61 +182,43 @@ export default function HomePage() {
               </div>
             )}
           </form>
-        </div>
-      </div>
+        </article>
 
-      <div className="modes">
-        <Link href="/lobbies" className="mode" style={{ ["--h" as string]: 235 }}>
-          <span className="orb" style={{ ["--h" as string]: 235 }} aria-hidden>
-            3
-          </span>
-          <h2>Group discussion</h2>
-          <p>Join a lobby another student opened, or open your own with a topic and a timer.</p>
-        </Link>
-        <Link href="/practice/new" className="mode" style={{ ["--h" as string]: 172 }}>
-          <span className="orb" style={{ ["--h" as string]: 172 }} aria-hidden>
-            AI
+        <article className="option">
+          <span className="tile-icon tile-icon--lg tile-icon--violet" aria-hidden>
+            <Icon name="bot" size={26} />
           </span>
           <h2>Practice with AI</h2>
-          <p>Talk it out loud with AI personas that push back, interrupt and keep you honest.</p>
-        </Link>
-      </div>
+          <p>Talk it out loud with AI participants that push back, interrupt and keep you honest.</p>
+          <Link href="/practice/new" className="option-cta">
+            <button type="button" className="secondary">
+              Start practice <Icon name="arrow-right" size={16} />
+            </button>
+          </Link>
+        </article>
+      </section>
 
-      <div className="actions">
-        <Link href="/sessions/new" className="action">
-          <span className="feature-icon" aria-hidden>
-            ➕
-          </span>
-          <span>
-            <strong>Open a lobby</strong>
-            <span className="meta" style={{ display: "block" }}>
-              Set the topic, timer and seats
-            </span>
-          </span>
-        </Link>
-        <Link href="/history" className="action">
-          <span className="feature-icon" aria-hidden>
-            📈
-          </span>
-          <span>
-            <strong>My performance</strong>
-            <span className="meta" style={{ display: "block" }}>
-              Scores across every GD
-            </span>
-          </span>
-        </Link>
-        <Link href="/profile" className="action">
-          <span className="feature-icon" aria-hidden>
-            👤
-          </span>
-          <span>
-            <strong>Profile</strong>
-            <span className="meta" style={{ display: "block" }}>
-              Your details and goals
-            </span>
-          </span>
-        </Link>
-      </div>
+      <section className="card">
+        <h2 className="section-title">How it works</h2>
+        <ol className="steps">
+          <li>
+            <span className="step-no">1</span>
+            <span>Choose a topic or get a suggestion</span>
+          </li>
+          <li>
+            <span className="step-no">2</span>
+            <span>Discuss for 10 to 15 minutes</span>
+          </li>
+          <li>
+            <span className="step-no">3</span>
+            <span>AI evaluates each participant</span>
+          </li>
+          <li>
+            <span className="step-no">4</span>
+            <span>Get detailed personal feedback</span>
+          </li>
+        </ol>
+      </section>
 
       {isHostRole && <SessionList title="Discussions you host" items={hosted} hostView />}
       <SessionList title="Discussions you have joined" items={mine} />
@@ -252,7 +257,7 @@ function SessionList({
                 <code>{session.code}</code>
               </div>
               <span className="session-card-topic">{session.topic}</span>
-              <span className="meta">Open →</span>
+              <span className="meta session-open">Open <Icon name="arrow-right" size={14} /></span>
             </Link>
           ))}
         </div>

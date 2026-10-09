@@ -1,9 +1,12 @@
 import type { Metadata } from "next";
 
 import { AuthProvider } from "@/lib/auth-context";
-import { TopBar } from "./top-bar";
+import { Sidebar } from "./sidebar";
 import "./globals.css";
 import "./immersive.css";
+import "./refresh.css";
+import "./refresh2.css";
+import "./refresh3.css";
 
 export const metadata: Metadata = {
   title: "GD Platform",
@@ -15,8 +18,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en">
       <body>
         <AuthProvider>
-          <TopBar />
-          <main className="shell">{children}</main>
+          <div className="app">
+            <Sidebar />
+            <main className="shell">{children}</main>
+          </div>
         </AuthProvider>
       </body>
     </html>

@@ -13,6 +13,9 @@ import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
 import { AgentsPanel } from "@/app/agents-panel";
+import { Icon } from "@/app/icons";
+import { Skeleton } from "@/app/motion";
+import { hueFor } from "@/app/immersive/parts";
 import { ApiError, lobbies, sessions } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { useSessionSocket } from "@/lib/use-session-socket";
@@ -37,6 +40,7 @@ export default function LobbyPage() {
   const [busy, setBusy] = useState(false);
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteStatus, setInviteStatus] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const socket = useSessionSocket(id ?? null);
   const latest = socket.events[0];
@@ -121,6 +125,16 @@ export default function LobbyPage() {
     }
   }
 
+  async function copyCode() {
+    try {
+      await navigator.clipboard.writeText(lobby?.code ?? "");
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    } catch {
+      // Clipboard access can be refused; the code is on screen to read out.
+    }
+  }
+
   async function leave() {
     try {
       await lobbies.leave(id);
@@ -130,134 +144,123 @@ export default function LobbyPage() {
   }
 
   if (!lobby || !session) {
-    return <p className="empty">{error ?? "Loading the lobby…"}</p>;
+    return error ? <p className="empty">{error}</p> : <Skeleton rows={2} tall />;
   }
 
+  const minutes = Math.round(session.duration_seconds / 60);
+  const statusOf = (p: (typeof lobby.participants)[number]) =>
+    p.state === "DISCONNECTED"
+      ? { text: "Disconnected", cls: "dot--away" }
+      : p.is_ready
+        ? { text: "Ready", cls: "dot--ok" }
+        : { text: "Joined", cls: "dot--info" };
+  const empty = Math.max(0, Math.min(lobby.capacity, 12) - lobby.participants.length);
+
   return (
-    <div className="stack">
-      <div className="card">
-        <div className="row row--between row--wrap">
-          <div>
-            <h1>{session.topic}</h1>
-            <p className="subtitle" style={{ marginBottom: 0 }}>
-              {session.topic_category} · {session.difficulty} · {session.gd_type.replace("_", " ")}{" "}
-              · {Math.round(session.duration_seconds / 60)} min
-              {session.preparation_seconds > 0 &&
-                ` (+${Math.round(session.preparation_seconds / 60)} min preparation)`}
-            </p>
-          </div>
-          <div style={{ textAlign: "right" }}>
-            <p className="meta" style={{ margin: "0 0 0.3rem" }}>
-              Session code
-            </p>
-            <div className="code-badge">{lobby.code}</div>
-          </div>
+    <div className="stack" style={{ gap: "1.25rem" }}>
+      <header className="page-head page-head--back">
+        <button type="button" className="back" onClick={leave} aria-label="Leave the lobby">
+          <Icon name="arrow-left" />
+        </button>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <h1>
+            Lobby: <span className="lobby-code">{lobby.code}</span>
+          </h1>
+          <p>Share this code with your friends to join.</p>
         </div>
-      </div>
+        <button type="button" className="secondary" onClick={copyCode}>
+          <Icon name={copied ? "check" : "copy"} size={16} /> {copied ? "Copied" : "Copy code"}
+        </button>
+      </header>
 
       {error && <div className="alert alert--error">{error}</div>}
       {socket.error && <div className="alert alert--error">Control channel: {socket.error}</div>}
 
-      <div className="card">
-        <div className="row row--between" style={{ marginBottom: "0.9rem" }}>
-          <h2 style={{ fontSize: "1.05rem", margin: 0 }}>
-            Participants {lobby.occupancy}/{lobby.capacity}
+      <section className="card">
+        <p className="topic-box topic-box--lg">{session.topic}</p>
+        <ul className="chips-row">
+          <li>
+            <Icon name="clock" size={16} /> {minutes} minutes
+            {session.preparation_seconds > 0 &&
+              `, plus ${Math.round(session.preparation_seconds / 60)} to prepare`}
+          </li>
+          <li>
+            <Icon name="users" size={16} /> {lobby.occupancy} of {lobby.capacity} joined
+          </li>
+          <li>
+            <Icon name="lock" size={16} /> Friends join with a code
+          </li>
+          <li className="cap">
+            <Icon name="target" size={16} /> {session.gd_type.replace("_", " ")}, {session.difficulty}
+          </li>
+        </ul>
+      </section>
+
+      <section>
+        <div className="row row--between" style={{ marginBottom: "0.7rem" }}>
+          <h2 className="section-title" style={{ margin: 0 }}>
+            Participants
           </h2>
           <span className={`pill ${socket.connected ? "pill--live" : ""}`}>
             {socket.connected ? "connected" : "reconnecting"}
           </span>
         </div>
 
-        <div className="participants">
-          {lobby.participants.map((participant) => (
-            <div
-              key={participant.id}
-              className={`participant ${
-                participant.state === "DISCONNECTED" ? "participant--away" : ""
-              }`}
-            >
-              <div className="row" style={{ marginBottom: "0.35rem" }}>
-                <span className="avatar">{participant.candidate_label}</span>
-                <strong style={{ fontSize: "0.92rem" }}>
-                  {participant.display_name}
-                  {participant.user_id === user?.id && " (you)"}
+        <div className="seat-grid">
+          {lobby.participants.map((participant) => {
+            const status = statusOf(participant);
+            const isAI = participant.display_name.endsWith("(AI)");
+            const name = participant.display_name.replace(/\s*\(AI\)$/, "");
+            return (
+              <div
+                key={participant.id}
+                className={`seat-card ${participant.state === "DISCONNECTED" ? "seat-card--away" : ""}`}
+              >
+                <span
+                  className="seat-avatar"
+                  style={{ "--h": hueFor(participant.candidate_label) } as React.CSSProperties}
+                >
+                  {isAI ? <Icon name="bot" size={26} /> : name.slice(0, 1).toUpperCase()}
+                </span>
+                <strong>
+                  {name}
+                  {participant.user_id === user?.id && <span className="you"> (you)</span>}
                 </strong>
+                <span className="seat-status">
+                  <i className={`dot ${status.cls}`} />
+                  {status.text}
+                  {isAI && <span className="badge">AI</span>}
+                </span>
               </div>
-              <span className={`pill ${participant.is_ready ? "pill--live" : ""}`}>
-                {participant.state === "DISCONNECTED"
-                  ? "disconnected"
-                  : participant.is_ready
-                    ? "ready"
-                    : "waiting"}
+            );
+          })}
+          {Array.from({ length: empty }, (_, i) => (
+            <div key={`empty-${i}`} className="seat-card seat-card--empty">
+              <span className="seat-avatar seat-avatar--empty">
+                <Icon name="user-plus" size={24} />
               </span>
+              <span className="meta">Waiting for participant</span>
             </div>
           ))}
         </div>
 
-        <p className="footnote">
+        <p className="footnote" style={{ marginTop: "0.9rem" }}>
           {lobby.ready_count} of {lobby.occupancy} ready. Needs at least {lobby.min_participants}{" "}
           participants, all ready, before it can start. An invited candidate who has not arrived
           does not block the start.
         </p>
-      </div>
+      </section>
 
-      {isHost && (
-        <AgentsPanel
-          sessionId={id}
-          seatsLeft={lobby.capacity - lobby.occupancy}
-          onAdded={() => void load()}
-        />
-      )}
-
-      {isHost && (
-        <div className="card">
-          <h2 style={{ fontSize: "1.05rem", margin: "0 0 0.5rem" }}>Invite a candidate</h2>
-          <p className="subtitle">
-            Reserves a seat and notifies them. They still join with the code — the invitation is a
-            reservation, not a separate way in.
-          </p>
-          {inviteStatus && <div className="alert alert--ok">{inviteStatus}</div>}
-          <form onSubmit={sendInvite} className="row row--wrap">
-            <input
-              type="email"
-              aria-label="Candidate email"
-              placeholder="candidate@example.com"
-              value={inviteEmail}
-              onChange={(e) => setInviteEmail(e.target.value)}
-              style={{ maxWidth: "20rem" }}
-              required
-            />
-            <button type="submit" className="secondary">
-              Send invitation
-            </button>
-          </form>
-        </div>
-      )}
-
-      <div className="card">
+      <section className="card">
         <div className="row row--wrap">
           {me && (
-            <button type="button" onClick={toggleReady} disabled={busy}>
+            <button type="button" className="secondary" onClick={toggleReady} disabled={busy}>
               {me.is_ready ? "Not ready" : "I'm ready"}
             </button>
           )}
           {!me && isHost && (
-            <button type="button" onClick={joinAsCandidate} disabled={busy}>
+            <button type="button" className="secondary" onClick={joinAsCandidate} disabled={busy}>
               Join as a candidate
-            </button>
-          )}
-          {isHost && (
-            <button
-              type="button"
-              onClick={startSession}
-              disabled={busy || !lobby.start_condition_met}
-              title={
-                lobby.start_condition_met
-                  ? "Start the discussion"
-                  : "Everyone must be ready first"
-              }
-            >
-              Start discussion
             </button>
           )}
           {me && (
@@ -266,6 +269,17 @@ export default function LobbyPage() {
             </button>
           )}
         </div>
+        {isHost && (
+          <button
+            type="button"
+            className="button-lg start-btn"
+            onClick={startSession}
+            disabled={busy || !lobby.start_condition_met}
+            title={lobby.start_condition_met ? "Start the discussion" : "Everyone must be ready first"}
+          >
+            Start discussion
+          </button>
+        )}
         {isHost && !me && (
           <p className="footnote">
             You are hosting: you can start and end this discussion and watch it, but you are not a
@@ -279,7 +293,40 @@ export default function LobbyPage() {
             candidates who have not joined.
           </p>
         )}
-      </div>
+      </section>
+
+      {isHost && (
+        <div className="lobby-extras">
+          <section className="card">
+            <h2 className="section-title">Invite by email</h2>
+            <p className="meta" style={{ margin: "0 0 0.7rem" }}>
+              Reserves a seat and notifies them. They still join with the code; the invitation is
+              a reservation, not a separate way in.
+            </p>
+            {inviteStatus && <div className="alert alert--ok">{inviteStatus}</div>}
+            <form onSubmit={sendInvite} className="row row--wrap">
+              <input
+                type="email"
+                aria-label="Candidate email"
+                placeholder="friend@example.com"
+                value={inviteEmail}
+                onChange={(e) => setInviteEmail(e.target.value)}
+                style={{ maxWidth: "20rem" }}
+                required
+              />
+              <button type="submit" className="secondary">
+                Send invitation
+              </button>
+            </form>
+          </section>
+
+          <AgentsPanel
+            sessionId={id}
+            seatsLeft={lobby.capacity - lobby.occupancy}
+            onAdded={() => void load()}
+          />
+        </div>
+      )}
     </div>
   );
 }
