@@ -16,6 +16,7 @@ from services.evaluation.synthesis import (
     Synthesis,
     build_prompt,
     build_tools,
+    own_lines_for,
     synthesise,
 )
 from services.llm import set_llm_provider
@@ -168,7 +169,15 @@ def test_the_system_prompt_forbids_inventing_numbers():
 def test_the_response_schema_has_no_score_field():
     """Structural: there is nowhere for a score to go (claude.md invariant 5)."""
     properties = set(RESPONSE_SCHEMA["properties"])
-    assert properties == {"summary", "pattern", "priority_improvement", "caveat"}
+    assert properties == {
+        "summary",
+        "pattern",
+        "priority_improvement",
+        "caveat",
+        "strengths",
+        "focus_areas",
+        "dimension_notes",
+    }
     assert not any("score" in key for key in properties)
     assert RESPONSE_SCHEMA["additionalProperties"] is False
 
@@ -232,7 +241,91 @@ async def test_a_model_inventing_a_score_field_cannot_reach_the_report():
         "pattern",
         "priority_improvement",
         "caveat",
+        "strengths",
+        "focus_areas",
+        "dimension_notes",
         "tool_calls",
         "model",
         "error",
     }
+
+
+class _Seg:
+    def __init__(self, who: str, start: float, text: str) -> None:
+        self.candidate_id, self.start, self.text = who, start, text
+
+
+def test_the_prompt_carries_only_this_candidates_own_lines():
+    segments = [
+        _Seg("A", 5, "Remote work widens the talent pool."),
+        _Seg("B", 20, "Hallway chats matter."),
+        _Seg("A", 65, "I would add that async forces clearer writing."),
+    ]
+    lines = own_lines_for("A", segments)
+    assert lines == [
+        '  00:05 "Remote work widens the talent pool."',
+        '  01:05 "I would add that async forces clearer writing."',
+    ]
+    prompt = build_prompt(LABEL, outputs(), metrics(), "topic", lines)
+    assert "YOUR OWN LINES" in prompt
+    assert "Hallway chats matter" not in prompt
+
+
+def test_long_transcripts_keep_the_start_and_the_end():
+    segments = [_Seg("A", i * 10, f"point {i}") for i in range(30)]
+    lines = own_lines_for("A", segments)
+    assert len(lines) == 12
+    assert "point 0" in lines[0] and "point 29" in lines[-1]
+
+
+def test_the_system_prompt_demands_descriptive_plain_language():
+    assert "has not seen the scoring rubric" in SYSTEM_PROMPT
+    assert "dimension_notes" in SYSTEM_PROMPT
+
+
+def test_the_system_prompt_demands_personal_advice():
+    assert "pasted into anyone else's report" in SYSTEM_PROMPT
+
+
+async def test_strengths_and_focus_areas_reach_the_report_and_bad_items_are_dropped():
+    class Writer:
+        name = "writer"
+        model = "test"
+
+        async def complete_with_tools(self, *, system, prompt, tools, schema, **kwargs):
+            return LLMResult(
+                data={
+                    "summary": "s",
+                    "pattern": "p",
+                    "priority_improvement": "i",
+                    "caveat": "",
+                    "strengths": [
+                        {
+                            "point": "Cited data",
+                            "evidence": "00:05 'four percent'",
+                            "why_it_helped": "grounded it",
+                        },
+                        "not an object",
+                    ],
+                    "focus_areas": [
+                        {
+                            "area": "Invite quieter voices",
+                            "what_happened": "You held 46% of the floor.",
+                            "why_it_matters": "Panels read it as not making room.",
+                            "what_to_do": "Ask one person a direct question per round.",
+                            "practice": "Count your turns in a mock GD; ask on every third.",
+                            "try_saying": "Esha, where do you land on this?",
+                        },
+                        {"what_to_do": "missing the area key"},
+                    ],
+                },
+                model="test",
+                tool_calls=[],
+            )
+
+    set_llm_provider(Writer())
+    result = await synthesise(LABEL, outputs(), WEIGHTS, metrics(), "topic", [])
+    assert [s["point"] for s in result.strengths] == ["Cited data"]
+    assert [f["area"] for f in result.focus_areas] == ["Invite quieter voices"]
+    assert result.focus_areas[0]["try_saying"].startswith("Esha")
+    assert result.focus_areas[0]["practice"].startswith("Count")
