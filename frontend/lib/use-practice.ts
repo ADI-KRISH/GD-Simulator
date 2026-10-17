@@ -75,6 +75,8 @@ export function usePractice(sessionId: string | null) {
   const [micError, setMicError] = useState<string | null>(null);
   const [listening, setListening] = useState(false);
   const [muted, setMuted] = useState(false);
+  // Text GD mode (M14 FR-14.19): the student types; the personas still speak.
+  const [typing, setTyping] = useState(false);
 
   const socketRef = useRef<WebSocket | null>(null);
   const liveRef = useRef(false);
@@ -402,6 +404,28 @@ export function usePractice(sessionId: string | null) {
     sendJson("START");
   }, [sendJson]);
 
+  /** Begin without a microphone: type your turns (FR-14.19). Audio still needs the click. */
+  const startTyped = useCallback(() => {
+    setMicError(null);
+    playCtxRef.current ??= new AudioContext();
+    void playCtxRef.current.resume();
+    if (typeof speechSynthesis !== "undefined") speechSynthesis.cancel();
+    setTyping(true);
+    sendJson("START");
+  }, [sendJson]);
+
+  /** A typed turn. The server waits for a persona's line to finish: typing never cuts in. */
+  const sendText = useCallback((text: string): boolean => {
+    const socket = socketRef.current;
+    const clean = text.trim();
+    if (!clean || socket?.readyState !== WebSocket.OPEN) return false;
+    socket.send(JSON.stringify({ type: "TEXT", text: clean }));
+    return true;
+  }, []);
+
+  /** A raised hand (FR-14.12): the moderator invites you in at the next gap. */
+  const raiseHand = useCallback(() => sendJson("RAISE_HAND"), [sendJson]);
+
   const toggleMute = useCallback(() => {
     mutedRef.current = !mutedRef.current;
     setMuted(mutedRef.current);
@@ -431,7 +455,11 @@ export function usePractice(sessionId: string | null) {
     micError,
     listening,
     muted,
+    typing,
     start,
+    startTyped,
+    sendText,
+    raiseHand,
     toggleMute,
   };
 }

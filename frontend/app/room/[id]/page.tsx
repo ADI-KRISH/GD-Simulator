@@ -20,7 +20,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   ArenaHeader,
+  FloorBars,
   hueFor,
+  IdeasStrip,
   Notices,
   RoundTable,
   type SeatInfo,
@@ -212,6 +214,10 @@ export default function RoomPage() {
             }
           />
           <Notices notices={socket.notices} nameOf={nameOf} />
+          <IdeasStrip ideas={socket.ideas} />
+          {(isLive || Object.keys(socket.floor).length > 0) && (
+            <FloorBars floor={socket.floor} order={seats.map((s) => s.label)} nameOf={nameOf} />
+          )}
 
           {error && <div className="alert alert--error">{error}</div>}
           {/* A watching host publishes nothing, so a missing media server (e.g. no

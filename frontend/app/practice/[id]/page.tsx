@@ -8,7 +8,14 @@
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
-import { ArenaHeader, Notices, RoundTable, type SeatInfo } from "@/app/immersive/parts";
+import {
+  ArenaHeader,
+  FloorBars,
+  IdeasStrip,
+  Notices,
+  RoundTable,
+  type SeatInfo,
+} from "@/app/immersive/parts";
 import { ApiError, sessions } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { usePractice } from "@/lib/use-practice";
@@ -22,6 +29,15 @@ export default function PracticeRoomPage() {
   const room = usePractice(id ?? null);
   const [error, setError] = useState<string | null>(null);
   const [ending, setEnding] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [handUp, setHandUp] = useState(false);
+
+  // A raised hand shows as raised until the moderator has had a moment to invite.
+  useEffect(() => {
+    if (!handUp) return;
+    const timer = setTimeout(() => setHandUp(false), 8000);
+    return () => clearTimeout(timer);
+  }, [handUp]);
 
   const state = room.sessionState ?? "";
   const live = state === "LIVE";
@@ -46,7 +62,7 @@ export default function PracticeRoomPage() {
       speaking: room.speaking.includes("A"),
       level: room.micLevel,
       strikes: room.penalties["A"]?.interruptions,
-      sub: room.muted ? "muted" : room.listening ? "listening" : "mic off",
+      sub: room.typing ? "typing" : room.muted ? "muted" : room.listening ? "listening" : "mic off",
     },
     ...personas.map((p) => ({
       label: p.label,
@@ -60,6 +76,12 @@ export default function PracticeRoomPage() {
 
   const last = room.captions[room.captions.length - 1];
   const penalty = room.penalties["A"]?.penalty ?? 0;
+  const order = ["A", ...personas.map((p) => p.label)];
+
+  function send(event: React.FormEvent) {
+    event.preventDefault();
+    if (room.sendText(draft)) setDraft("");
+  }
 
   async function endNow() {
     setEnding(true);
@@ -115,25 +137,72 @@ export default function PracticeRoomPage() {
       </div>
 
       <div className="stack" style={{ gap: "0.7rem" }}>
+        <IdeasStrip ideas={room.ideas} />
+        {(live || Object.keys(room.floor).length > 0) && (
+          <FloorBars floor={room.floor} order={order} nameOf={nameOf} />
+        )}
         {(error || room.error || room.micError) && (
           <div className="alert alert--error" style={{ margin: "0 auto" }}>
             {error ?? room.micError ?? room.error}
+            {room.micError && notStarted && (
+              <button type="button" className="arena-btn" style={{ marginLeft: "0.8rem" }} onClick={room.startTyped}>
+                Type instead
+              </button>
+            )}
           </div>
+        )}
+        {(preparing || live) && room.typing && (
+          <form className="composer" onSubmit={send}>
+            <input
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              placeholder={live ? "Type your point and press Enter" : "The discussion opens when the clock starts"}
+              aria-label="Your turn"
+              maxLength={600}
+              disabled={!live}
+            />
+            <button type="submit" className="arena-btn arena-btn--primary" disabled={!live || !draft.trim()}>
+              Send
+            </button>
+          </form>
         )}
         <div className="arena-foot">
           {notStarted && (
-            <button type="button" className="arena-btn arena-btn--primary" onClick={() => void room.start()} disabled={!room.connected}>
-              {room.connected ? "Allow microphone and start" : "Connecting…"}
-            </button>
+            <>
+              <button type="button" className="arena-btn arena-btn--primary" onClick={() => void room.start()} disabled={!room.connected}>
+                {room.connected ? "Allow microphone and start" : "Connecting…"}
+              </button>
+              <button type="button" className="arena-btn" onClick={room.startTyped} disabled={!room.connected}>
+                Type instead
+              </button>
+            </>
           )}
           {(preparing || live) && (
             <>
-              <button type="button" className="arena-btn" onClick={room.toggleMute} aria-pressed={room.muted}>
-                {room.muted ? "Unmute" : "Mute"}
-              </button>
-              <div className="mic-meter" aria-hidden style={{ ["--lvl" as string]: room.muted ? 0 : room.micLevel }}>
-                <span />
-              </div>
+              {!room.typing && (
+                <>
+                  <button type="button" className="arena-btn" onClick={room.toggleMute} aria-pressed={room.muted}>
+                    {room.muted ? "Unmute" : "Mute"}
+                  </button>
+                  <div className="mic-meter" aria-hidden style={{ ["--lvl" as string]: room.muted ? 0 : room.micLevel }}>
+                    <span />
+                  </div>
+                </>
+              )}
+              {live && (
+                <button
+                  type="button"
+                  className="arena-btn"
+                  aria-pressed={handUp}
+                  onClick={() => {
+                    room.raiseHand();
+                    setHandUp(true);
+                  }}
+                  disabled={handUp}
+                >
+                  {handUp ? "Hand raised" : "Raise hand"}
+                </button>
+              )}
               <button type="button" className="arena-btn arena-btn--danger" onClick={endNow} disabled={ending}>
                 {ending ? "Ending…" : "Finish and get my report"}
               </button>
@@ -142,8 +211,10 @@ export default function PracticeRoomPage() {
         </div>
         {live && (
           <p className="arena-hint" style={{ margin: "0 auto" }}>
-            Speak when you have a point. If you talk over a persona they stop, and it counts as an
-            interruption.
+            {room.typing
+              ? "Type when you have a point. It goes in when the current speaker finishes — typing never interrupts anyone."
+              : "Speak when you have a point. If you talk over a persona they stop, and it counts as an interruption."}{" "}
+            Real GDs have no hand-raise; use it to practise, then try coming in on your own.
           </p>
         )}
         {room.captions.length > 0 && (

@@ -686,3 +686,108 @@
   text-align: center;
   margin-bottom: 0.7rem;
 }
+
+/* Speaking time for everyone (M14 FR-14.11). */
+.floor {
+  display: grid;
+  gap: 0.35rem;
+  width: 100%;
+  max-width: 26rem;
+  margin: 0 auto;
+  font-size: 0.8rem;
+  color: var(--mist);
+}
+
+.floor-row {
+  display: grid;
+  grid-template-columns: 6.5rem 1fr 3rem;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.floor-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: #d6dbea;
+}
+
+.floor-bar {
+  height: 0.45rem;
+  border-radius: 999px;
+  background: var(--glass-edge);
+  overflow: hidden;
+}
+
+.floor-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  transition: width 400ms ease;
+}
+
+.floor-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The latest ideas on the table (M14 FR-14.13). */
+.ideas {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  max-width: 46rem;
+  margin: 0 auto;
+}
+
+.ideas-label {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--mist);
+}
+
+.idea {
+  padding: 0.3rem 0.7rem;
+  border-radius: 999px;
+  border: 1px solid var(--glass-edge);
+  background: var(--glass);
+  font-size: 0.8rem;
+  color: #e6e9f4;
+}
+
+.idea--open {
+  border-style: dashed;
+  color: var(--lamp);
+}
+
+/* Typing your turn (M14 FR-14.19). */
+.composer {
+  display: flex;
+  gap: 0.5rem;
+  width: 100%;
+  max-width: 40rem;
+  margin: 0 auto;
+}
+
+.composer input {
+  flex: 1;
+  padding: 0.7rem 1rem;
+  border-radius: 999px;
+  border: 1px solid var(--glass-edge);
+  background: rgb(255 255 255 / 0.06);
+  color: #eef0f8;
+  font: inherit;
+}
+
+.composer input:focus-visible {
+  outline: 3px solid #fff;
+  outline-offset: 2px;
+}
+
+.arena-btn[aria-pressed="true"] {
+  background: rgb(255 179 71 / 0.18);
+  border-color: var(--lamp);
+}

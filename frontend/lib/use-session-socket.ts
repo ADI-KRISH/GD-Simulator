@@ -69,6 +69,12 @@ export interface SocketState {
   penalties: Record<string, { interruptions: number; penalty: number }>;
   /** Most recent notices first; the UI shows them briefly as toasts. */
   notices: TurnNotice[];
+  /** Seconds each participant has held the floor, from recorded turns (M14 FR-14.11). */
+  floor: Record<string, number>;
+  /** Turns already counted into `floor`, so a re-sent turn is not counted twice. */
+  counted: Record<string, true>;
+  /** The latest ideas on the table, from the Observer (M14 FR-14.13). */
+  ideas: { ideas: string[]; open_questions: string[] } | null;
 }
 
 let noticeSeq = 0;
@@ -86,6 +92,9 @@ export const INITIAL: SocketState = {
   evaluationReady: false,
   penalties: {},
   notices: [],
+  floor: {},
+  counted: {},
+  ideas: null,
 };
 
 // Keep the visible log short — it is a debug aid, not a transcript.
@@ -218,6 +227,10 @@ export function apply(prev: SocketState, frame: Frame): SocketState {
       };
     case "SPEECH_STOPPED":
       return { ...prev, events, speaking: prev.speaking.filter((s) => s !== label) };
+    case "IDEAS_UPDATED": {
+      const p = frame.payload as { ideas?: string[]; open_questions?: string[] };
+      return { ...prev, events, ideas: { ideas: p.ideas ?? [], open_questions: p.open_questions ?? [] } };
+    }
     case "TURN_RECORDED": {
       const p = frame.payload as {
         candidate_label: string;
@@ -225,11 +238,21 @@ export function apply(prev: SocketState, frame: Frame): SocketState {
         reply_to: string | null;
         interruptions: number;
         penalty: number;
+        start?: number;
+        end?: number;
       };
       const penalties = {
         ...prev.penalties,
         [p.candidate_label]: { interruptions: p.interruptions, penalty: p.penalty },
       };
+      // A turn can arrive twice (an older one re-marked as interrupted): count it once.
+      const key = `${p.candidate_label}|${p.start}|${p.end}`;
+      const fresh = typeof p.start === "number" && typeof p.end === "number" && !prev.counted[key];
+      const held = fresh ? Math.max(0, p.end! - p.start!) : 0;
+      const floor = fresh
+        ? { ...prev.floor, [p.candidate_label]: (prev.floor[p.candidate_label] ?? 0) + held }
+        : prev.floor;
+      const counted = fresh ? { ...prev.counted, [key]: true as const } : prev.counted;
       const notice: TurnNotice | null = p.interrupted
         ? { id: ++noticeSeq, kind: "interruption", by: p.candidate_label, target: p.interrupted, penalty: p.penalty }
         : p.reply_to
@@ -239,6 +262,8 @@ export function apply(prev: SocketState, frame: Frame): SocketState {
         ...prev,
         events,
         penalties,
+        floor,
+        counted,
         notices: notice ? [notice, ...prev.notices].slice(0, 6) : prev.notices,
       };
     }

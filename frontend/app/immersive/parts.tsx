@@ -200,3 +200,66 @@ export function ArenaHeader({
     </header>
   );
 }
+
+function clockOf(seconds: number): string {
+  const whole = Math.max(0, Math.round(seconds));
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
+}
+
+/** Live speaking time for everyone at the table (M14 FR-14.11), in each orb's colour. */
+export function FloorBars({
+  floor,
+  order,
+  nameOf,
+}: {
+  floor: Record<string, number>;
+  order: string[];
+  nameOf: (label: string) => string;
+}) {
+  const total = order.reduce((sum, label) => sum + (floor[label] ?? 0), 0);
+  return (
+    <div className="floor" aria-label="Speaking time so far">
+      {order.map((label) => {
+        const seconds = floor[label] ?? 0;
+        const share = total > 0 ? seconds / total : 0;
+        const fill: CSSProperties = {
+          width: `${Math.round(share * 100)}%`,
+          background: `hsl(${hueFor(label)} 70% 62%)`,
+        };
+        return (
+          <div key={label} className="floor-row">
+            <span className="floor-name">{nameOf(label)}</span>
+            <span className="floor-bar" role="presentation">
+              <i style={fill} />
+            </span>
+            <span className="floor-num">{clockOf(seconds)}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** The latest ideas on the table, from the Observer's notes (M14 FR-14.13). */
+export function IdeasStrip({
+  ideas,
+}: {
+  ideas: { ideas: string[]; open_questions: string[] } | null;
+}) {
+  if (!ideas || (ideas.ideas.length === 0 && ideas.open_questions.length === 0)) return null;
+  return (
+    <div className="ideas" aria-label="Recent ideas" aria-live="polite">
+      <span className="ideas-label">On the table</span>
+      {ideas.ideas.map((idea, index) => (
+        <span key={`idea-${index}`} className="idea">
+          {idea}
+        </span>
+      ))}
+      {ideas.open_questions.map((question, index) => (
+        <span key={`open-${index}`} className="idea idea--open" title="Still open">
+          {question}
+        </span>
+      ))}
+    </div>
+  );
+}
