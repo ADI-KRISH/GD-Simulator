@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from services.llm import LLMError, get_persona_llm_provider
+from services.practice import panel
 from services.practice import timing as clock
 from services.realtime.hub import hub
 from services.realtime.protocol import ServerEvent, server_frame
@@ -56,6 +57,11 @@ STUDENT_LABEL = "A"
 BARGE_IN_TAIL_SECONDS = 0.6
 # Silence after which a persona prompts the student.
 IDLE_SECONDS = 14.0
+# A student silent this long is invited in by name by the moderator (EC-14.1).
+STUDENT_SILENT_SECONDS = 40.0
+# Token budget for one spoken line: the words are capped by the prompt; a reasoning
+# model needs headroom above them or its JSON is cut off.
+PERSONA_MAX_TOKENS = 400
 # Near the end the table should not sit in silence waiting for a conclusion.
 WRAP_UP_IDLE_SECONDS = 6.0
 # After a persona speaks, chance that another persona follows on (max chain below).
@@ -134,12 +140,27 @@ class PracticeRoom:
         # Someone (student or persona) has already wrapped the discussion up.
         self.concluded = False
 
+        # The panel's bookkeeping (panel.py): who runs the room, whose turn it is,
+        # how much of the talk each voice has held, and any turn owed next.
+        self.moderator: str | None = None
+        self.turn = 0
+        self.last_turn_of: dict[str, int] = {}
+        self.floor: dict[str, float] = {}
+        self.last_text = ""
+        self.student_spoke_at = time.monotonic()
+        self.redirects = 0
+        self.yields = 0  # repeats in a row; three bring a curveball (EC-14.4)
+        self.forced: tuple[str, str | None, str] | None = None  # (label, cue, target label)
+        self.ai_question = ""  # the student just asked whether we are an AI
+        self.rng = random.Random()
+
     # ------------------------------------------------------------------ setup
 
     async def load(self) -> GDSession:
         async with self.factory() as db:
             gd = await session_service.require_session(db, self.session_id)
             self.personas = {p["label"]: p for p in gd.personas}
+            self.moderator = panel.pick_moderator(self.personas)
             self._started_at_gd = gd
             return gd
 
@@ -258,6 +279,15 @@ class PracticeRoom:
         self.lines.append((self.student_name, text))
         self.last_speaker = STUDENT_LABEL
         self.last_activity = time.monotonic()
+        self._note_turn(STUDENT_LABEL, start, end, text)
+        self.student_spoke_at = time.monotonic()
+        self.ai_question = text if panel.asked_if_ai(text) else ""
+        # EC-14.2: the student holds most of the talk; the moderator hands it on.
+        if self.moderator and panel.should_redirect(self.floor, self.redirects):
+            target = panel.quietest(self.personas, self.floor, exclude=self.moderator)
+            if target:
+                self.redirects += 1
+                self.forced = (self.moderator, "redirect", target)
         await self._announce(STUDENT_LABEL, self.student_name, text, changed, interrupts)
         await self._send_json(server_frame(ServerEvent.USER_TRANSCRIPT, self.sid, {"text": text}))
         self._start_burst(addressed=self._addressed(text), hold=LISTEN_HOLD_SECONDS)
@@ -301,29 +331,52 @@ class PracticeRoom:
                 return label
         return None
 
-    def _choose(self, addressed: str | None = None, converging: bool = False) -> str | None:
-        if not self.personas:
-            return None
-        if addressed and addressed != self.last_speaker:
-            return addressed
-        pool = [p for label, p in self.personas.items() if label != self.last_speaker] or list(
-            self.personas.values()
-        )
-        weights = [float(p.get("eagerness", 1.0)) for p in pool]
-        if converging and not self.concluded:
-            # Whoever naturally summarises is the one to close the discussion.
-            weights = [
-                w * 4 if "summaris" in p["persona"].lower() else w
-                for w, p in zip(weights, pool, strict=False)
-            ]
-        return random.choices(pool, weights=weights)[0]["label"]
+    def _note_turn(self, label: str, start: float, end: float, text: str) -> None:
+        """Bookkeeping for the bids: whose turn it was, and how long they held the floor."""
+        self.turn += 1
+        self.last_turn_of[label] = self.turn
+        self.floor[label] = self.floor.get(label, 0.0) + max(0.0, end - start)
+        self.last_text = text
 
-    def _start_burst(self, addressed: str | None = None, hold: float = 0.0) -> None:
+    def _choose(
+        self, addressed: str | None = None, converging: bool = False
+    ) -> tuple[str | None, str | None, str]:
+        """Who speaks next, and any special task for that turn: (label, cue, target).
+
+        A turn owed (a redirect, a curveball, the persona a redirect named) comes
+        first; then whoever the last speaker named; then the highest bid (FR-14.6).
+        """
+        if not self.personas:
+            return None, None, ""
+        if self.forced:
+            forced, self.forced = self.forced, None
+            return forced
+        if addressed and addressed != self.last_speaker:
+            return addressed, None, ""
+        closing = converging and not self.concluded
+        label = panel.choose_next(
+            self.personas,
+            last_speaker=self.last_speaker,
+            last_text=self.last_text,
+            turn=self.turn,
+            last_turn_of=self.last_turn_of,
+            floor=self.floor,
+            moderator=self.moderator,
+            closing=closing,
+            rng=self.rng,
+        )
+        return label, ("close" if closing and label == self.moderator else None), ""
+
+    def _start_burst(
+        self, addressed: str | None = None, hold: float = 0.0, opening: bool = False
+    ) -> None:
         if self.speaking:
             return  # one voice at a time: never start a second line over a live one
         if self.burst and not self.burst.done():
             self.burst.cancel()
-        self.burst = asyncio.create_task(self._burst(addressed, hold), name=f"practice-{self.sid}")
+        self.burst = asyncio.create_task(
+            self._burst(addressed, hold, opening), name=f"practice-{self.sid}"
+        )
 
     async def _listen(self, hold: float) -> bool:
         """Wait until the student is done talking. False if they are still going."""
@@ -334,7 +387,9 @@ class PracticeRoom:
             waited += 0.2
         return not self.user_active and not self.stt_pending
 
-    async def _burst(self, addressed: str | None = None, hold: float = 0.0) -> None:
+    async def _burst(
+        self, addressed: str | None = None, hold: float = 0.0, opening: bool = False
+    ) -> None:
         """A persona answers; sometimes another follows on, then the floor is the student's."""
         try:
             if not await self._listen(hold):
@@ -345,11 +400,21 @@ class PracticeRoom:
                     return
                 if self.concluded and when.converging:
                     return  # the discussion has been wrapped up: say nothing more
-                label = self._choose(addressed if turn == 0 else None, when.converging)
+                if opening and turn == 0 and self.moderator:
+                    # FR-14.3 / EC-14.1: the moderator opens and invites the student.
+                    label, cue, target = self.moderator, "open", ""
+                else:
+                    label, cue, target = self._choose(
+                        addressed if turn == 0 else None, when.converging
+                    )
                 if label is None or self.user_active:
                     return
-                cut = await self._persona_turn(label)
-                if cut or self.user_active or self.concluded or random.random() > CHAIN_PROBABILITY:
+                cut = await self._persona_turn(label, cue, target)
+                if cue == "open" or cut or self.user_active or self.concluded:
+                    return  # after an invitation the floor is the student's
+                if self.forced:
+                    continue  # a turn is owed (the persona a redirect named): take it now
+                if random.random() > CHAIN_PROBABILITY:
                     return
                 await asyncio.sleep(0.6)
         except asyncio.CancelledError:
@@ -391,14 +456,26 @@ class PracticeRoom:
                     continue
                 if not self.opened and quiet >= OPENING_DELAY_SECONDS:
                     self.opened = True
-                    self._start_burst()
+                    self._start_burst(opening=True)
                 elif self.opened and quiet >= nudge_after:
                     self.last_activity = time.monotonic()
+                    silent = time.monotonic() - self.student_spoke_at
+                    if self.moderator and not when.converging and silent >= STUDENT_SILENT_SECONDS:
+                        # EC-14.1: a silent student is brought in by name, once per stretch.
+                        self.forced = (self.moderator, "invite", "")
+                        self.student_spoke_at = time.monotonic()
                     self._start_burst()
         except asyncio.CancelledError:
             raise
 
-    async def _generate(self, persona: dict, when: clock.Timing) -> Line:
+    async def _generate(
+        self,
+        persona: dict,
+        when: clock.Timing,
+        cue: str | None = None,
+        target: str = "",
+        repeated: str = "",
+    ) -> Line:
         others = ", ".join(
             p["name"] for p in self.personas.values() if p["label"] != persona["label"]
         )
@@ -409,26 +486,27 @@ class PracticeRoom:
         async with self.factory() as db:
             gd = await session_service.require_session(db, self.session_id)
             topic = gd.topic
-        system = (
-            f"You are {persona['name']}, taking part in a live spoken group discussion with "
-            f"{self.student_name} (a student practising) and {others or 'nobody else'}.\n"
-            f"Topic: {topic}\n\nYour persona:\n{persona['persona']}\n\n"
-            "Speak the way people really talk, because your words are read out loud: short "
-            "sentences, contractions, the odd 'look', 'right' or 'see', and no "
-            "essay-style phrasing. No lists, markdown, stage directions or name "
-            f"prefix. Keep it to at most {clock.MAX_WORDS.get(when.phase, 45)} words. React to "
-            "what was just said. If the student has not spoken yet, open with a clear point of "
-            "view. Stay aware of the clock: you may mention time naturally (for example 'we are "
-            "running short') but never contradict it.\n\n"
-            + clock.guidance(when, self.concluded)
-            + '\n\nReturn JSON: {"speak": <bool>, "is_conclusion": <bool>, '
-            '"text": "<what you say next>"}.'
+        system = panel.persona_system(
+            persona,
+            student=self.student_name,
+            others=others,
+            topic=topic,
+            max_words=clock.MAX_WORDS.get(when.phase, 45),
+            clock_guidance=clock.guidance(when, self.concluded),
+            is_moderator=persona["label"] == self.moderator,
+            cue=cue,
+            target=self.personas[target]["name"] if target in self.personas else target,
+            repeated=repeated,
+            asked_ai=bool(self.ai_question),
         )
         result = await get_persona_llm_provider().complete_json(
             system=system,
             prompt=f"Discussion so far:\n{history}\n\nWhat do you say next?",
             schema=LINE_SCHEMA,
-            max_tokens=150,
+            # The prompt caps the words; this caps tokens. A reasoning model spends
+            # some before it answers, and at 150 a long prompt left too few for the
+            # JSON (Groq: json_validate_failed, a student's turn went unanswered).
+            max_tokens=PERSONA_MAX_TOKENS,
         )
         text = str(result.data.get("text", "")).strip().strip('"')
         return Line(
@@ -437,20 +515,36 @@ class PracticeRoom:
             is_conclusion=bool(result.data.get("is_conclusion", False)),
         )
 
-    async def _persona_turn(self, label: str) -> bool:
+    async def _persona_turn(self, label: str, cue: str | None = None, target: str = "") -> bool:
         """One persona speaks. Returns True if the student cut them off.
 
         Two stages: the line is generated and streamed to the browser (`speaking`;
         nothing is audible yet), then the browser plays it (`playing`). Only
         audible speech is recorded and only cutting off audible speech counts as
         an interruption - talking over a persona who has not started yet does not.
+
+        `cue` is a special task for this turn (panel.cue_text): opening, inviting the
+        student, a redirect to `target`, a curveball, the close.
         """
         persona = self.personas[label]
         when = await self._timing()
         if when is None or when.phase == clock.OVER:
             return False
         try:
-            line = await self._generate(persona, when)
+            line = await self._generate(persona, when, cue, target)
+            if line.speak and cue is None:
+                # FR-14.5: a line that restates a recent point goes back once; restated
+                # again, the persona yields, and three yields bring a curveball (EC-14.4).
+                recent = [said for _, said in self.lines[-8:]]
+                repeated = panel.repeats(line.text, recent)
+                if repeated:
+                    line = await self._generate(persona, when, "fresh", repeated=repeated)
+                    if line.speak and panel.repeats(line.text, recent):
+                        self.yields += 1
+                        if self.yields >= panel.YIELDS_BEFORE_CURVEBALL and self.moderator:
+                            self.yields = 0
+                            self.forced = (self.moderator, "curveball", "")
+                        return False
         except LLMError as exc:
             logger.warning("persona turn failed", extra={"session_id": self.sid, "error": str(exc)})
             return False
@@ -458,7 +552,10 @@ class PracticeRoom:
         # given after someone else's is dropped rather than repeated.
         if not line.speak or (line.is_conclusion and self.concluded):
             return False
-        text = line.text
+        self.yields = 0
+        # AC-14.5: asked whether it is an AI, the first reply says so — every time.
+        text = panel.ensure_honest(line.text, self.ai_question)
+        self.ai_question = ""
         if self.user_active or await self._live_clock() is None:
             return False
 
@@ -556,6 +653,9 @@ class PracticeRoom:
         self.lines.append((persona["name"], text))
         self.last_speaker = label
         self.last_activity = time.monotonic()
+        self._note_turn(label, start, end, text)
+        if cue == "redirect" and target in self.personas and not cut:
+            self.forced = (target, None, "")  # the persona just handed the floor answers
         await self._send_json(
             server_frame(
                 ServerEvent.PERSONA_AUDIO_END, self.sid, {"candidate_label": label, "cut": cut}

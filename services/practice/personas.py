@@ -6,9 +6,11 @@ with the student and are tracked like anyone else, but only the student is
 evaluated.
 """
 
+import random
 from dataclasses import asdict, dataclass
 
 from services.common.config import settings
+from services.practice.panel import sample_angles, sample_stances
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,8 +36,8 @@ PRESETS: dict[str, Persona] = {
             "arjun",
             "Arjun",
             "The analyst",
-            "Data-driven and precise. Backs every point with a number, a study or a "
-            "concrete example, and asks others for their evidence.",
+            "Analytical and precise. Reasons step by step, tests what each claim rests "
+            "on, and asks others for their evidence - but never makes up a number.",
             "cjVigY5qzO86Huf0OWal",  # Eric: smooth, trustworthy
         ),
         Persona(
@@ -93,10 +95,12 @@ PRESETS: dict[str, Persona] = {
 PERSONA_LABEL_PREFIX = "P"
 
 
-def resolve_personas(requested: list[dict]) -> list[dict]:
+def resolve_personas(requested: list[dict], rng: random.Random | None = None) -> list[dict]:
     """Turn a request ({preset} or custom {name, persona, voice_id}) into stored rows.
 
-    Raises ValueError for an unknown preset or an empty custom persona.
+    Each row also gets a sampled stance and private angle (panel.py), so a panel
+    disagrees instead of agreeing politely. Raises ValueError for an unknown preset
+    or an empty custom persona.
     """
     rows: list[dict] = []
     for index, item in enumerate(requested, start=1):
@@ -125,4 +129,9 @@ def resolve_personas(requested: list[dict]) -> list[dict]:
                 "eagerness": 1.0,
             }
         rows.append({"label": f"{PERSONA_LABEL_PREFIX}{index}", **row})
+    rng = rng or random.Random()
+    for row, stance, angle in zip(
+        rows, sample_stances(len(rows), rng), sample_angles(len(rows), rng), strict=True
+    ):
+        row["stance"], row["angle"] = stance, angle
     return rows

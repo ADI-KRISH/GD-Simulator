@@ -35,6 +35,7 @@ from services.common.db import get_session_factory
 from services.common.errors import ConflictError
 from services.common.security import hash_password
 from services.llm import LLMError, get_llm_provider
+from services.practice.panel import RULES
 from services.practice.personas import PRESETS
 from services.realtime.hub import hub
 from services.realtime.protocol import ServerEvent, server_frame
@@ -209,7 +210,8 @@ async def _say(
         f"You are {agent.name}, a candidate in a live group discussion with {others}.\n"
         f"Topic: {topic}\n\nYour persona:\n{agent.persona}\n"
         + (f"\nAdditional instructions:\n{sim.extra_prompt}\n" if sim.extra_prompt else "")
-        + "\nThis is a real, live group discussion, so behave like a real participant: respond "
+        + f"\n{RULES}\n"
+        + "\nThis is a live group discussion, so behave like a real participant: respond "
         "directly to what was just said, by name when you agree or disagree, build on or "
         "challenge a specific point, and stay on the topic without repeating what has been "
         "said. Speak in a few sentences at most, as spoken words — no lists, no markdown, no "
