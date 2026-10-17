@@ -62,6 +62,8 @@ STUDENT_SILENT_SECONDS = 40.0
 # Token budget for one spoken line: the words are capped by the prompt; a reasoning
 # model needs headroom above them or its JSON is cut off.
 PERSONA_MAX_TOKENS = 400
+# How long a reply waits (in 0.1 s steps) for a line the student cut to unwind.
+CUT_LINE_WAIT_STEPS = 50
 # Near the end the table should not sit in silence waiting for a conclusion.
 WRAP_UP_IDLE_SECONDS = 6.0
 # After a persona speaks, chance that another persona follows on (max chain below).
@@ -370,8 +372,12 @@ class PracticeRoom:
     def _start_burst(
         self, addressed: str | None = None, hold: float = 0.0, opening: bool = False
     ) -> None:
-        if self.speaking:
+        if self.speaking and not self.barge.is_set():
             return  # one voice at a time: never start a second line over a live one
+        # A line the student has cut may still be unwinding (its audio stream has not
+        # noticed yet). It must not swallow the reply to what they just said: that
+        # left the student unanswered until the idle nudge, 14 s later. `_burst`
+        # waits for the cut line to finish first.
         if self.burst and not self.burst.done():
             self.burst.cancel()
         self.burst = asyncio.create_task(
@@ -394,6 +400,12 @@ class PracticeRoom:
         try:
             if not await self._listen(hold):
                 return  # the student is still speaking; their next utterance re-triggers us
+            for _ in range(CUT_LINE_WAIT_STEPS):
+                if not self.speaking:
+                    break
+                await asyncio.sleep(0.1)  # a line the student cut is still unwinding
+            if self.speaking:
+                return
             for turn in range(MAX_CHAIN):
                 when = await self._timing()
                 if when is None or when.phase == clock.OVER:

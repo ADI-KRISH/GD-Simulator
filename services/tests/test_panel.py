@@ -346,3 +346,20 @@ def test_when_asked_the_turn_itself_says_to_admit_it():
     """The standing rule alone got an admission 2 times in 5 on Groq; this got 6 in 6."""
     assert "just asked whether you are an AI" in _system(asked_ai=True)
     assert "just asked whether you are an AI" not in _system()
+
+
+async def test_a_line_the_student_cut_does_not_swallow_the_reply(
+    client, candidate_auth, session_factory
+):
+    """Seen live: the reply to a barge-in waited 14.6 s for the idle nudge."""
+    room, _ = await _room(client, candidate_auth, session_factory)
+    calls = _script(room)
+    room.speaking = "P1"  # a line the student cut, still unwinding
+    room.barge.set()
+    room._start_burst()
+    assert room.burst is not None, "a cut line no longer blocks the reply"
+    await asyncio.sleep(0.3)
+    room.speaking = None  # the cut line finishes unwinding
+    await asyncio.wait_for(room.burst, timeout=10)
+    assert calls, "the student's turn was answered"
+    await room.close()
