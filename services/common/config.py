@@ -97,6 +97,9 @@ class Settings(BaseSettings):
     # Without it they spend the whole token cap thinking and return nothing, so a
     # 150-token persona line comes back empty. low | medium | high.
     llm_reasoning_effort: str = "low"
+    # Models to move to while one is rate-limited, comma-separated (same endpoint and
+    # key; each model has its own per-minute bucket). e.g. openai/gpt-oss-20b.
+    llm_fallback_models: str = ""
     llm_max_tokens: int = 2048
     llm_timeout_seconds: float = 60.0
     llm_max_retries: int = 3

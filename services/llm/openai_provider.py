@@ -17,12 +17,29 @@ import json
 import logging
 import random
 import re
+import time
 from typing import Any
 
 from services.common.config import settings
 from services.llm.base import LLMError, LLMResult, ToolDefinition, ToolInvocation
 
 logger = logging.getLogger(__name__)
+
+#: model id -> monotonic time its rate-limit window reopens. Shared by every
+#: provider in the process, because the vendor's limit is per model, not per
+#: caller: the personas and the evaluators draw on the same buckets.
+_COOLING_UNTIL: dict[str, float] = {}
+
+
+async def _model_with_headroom(models: list[str]) -> str:
+    """The first model not cooling; if all are, wait for the soonest to reopen."""
+    now = time.monotonic()
+    for model in models:
+        if _COOLING_UNTIL.get(model, 0.0) <= now:
+            return model
+    soonest = min(models, key=lambda m: _COOLING_UNTIL.get(m, 0.0))
+    await asyncio.sleep(max(_COOLING_UNTIL[soonest] - now, 0.0))
+    return soonest
 
 
 class OpenAIProvider:
@@ -49,13 +66,20 @@ class OpenAIProvider:
     async def _create(self, client, **request):
         """One chat completion, honouring the vendor's own rate-limit wait.
 
-        Free tiers cap tokens per minute and say how long to wait. Sleeping that long
-        (up to ten attempts, each capped at a minute) succeeds where the short generic
-        backoff burns every retry inside the same window.
+        Free tiers cap tokens per minute **per model** and say how long to wait. A
+        model that answers 429 is marked as cooling for that long, for every caller
+        in the process; the call moves to the next model with headroom
+        (`LLM_FALLBACK_MODELS`) and only sleeps when every model is cooling. The
+        evaluators used to fire together, all get 429 and all sleep the same 20 s.
+        One organization's models, each inside its own published limit.
         """
-        if _thinks_first(request.get("model", "")) and settings.llm_reasoning_effort:
-            request.setdefault("reasoning_effort", settings.llm_reasoning_effort)
+        models = self._candidate_models(request.get("model") or self.model)
         for attempt in range(10):
+            request["model"] = await _model_with_headroom(models)
+            if _thinks_first(request["model"]) and settings.llm_reasoning_effort:
+                request["reasoning_effort"] = settings.llm_reasoning_effort
+            else:
+                request.pop("reasoning_effort", None)
             try:
                 if self._slots is None:
                     return await client.chat.completions.create(**request)
@@ -65,11 +89,24 @@ class OpenAIProvider:
                 wait = _rate_limit_wait(exc)
                 if wait is None or attempt == 9:
                     raise
+                _COOLING_UNTIL[request["model"]] = time.monotonic() + wait
                 logger.warning(
-                    "rate limited, waiting for the window",
-                    extra={"wait": round(wait, 1), "attempt": attempt + 1},
+                    "rate limited; model cooling",
+                    extra={
+                        "model": request["model"],
+                        "wait": round(wait, 1),
+                        "attempt": attempt + 1,
+                    },
                 )
-                await asyncio.sleep(wait)
+
+    def _candidate_models(self, first: str) -> list[str]:
+        """This call's model, then the configured fallbacks, then the main model."""
+        fallbacks = [m.strip() for m in settings.llm_fallback_models.split(",") if m.strip()]
+        ordered: list[str] = []
+        for model in (first, *fallbacks, settings.llm_model):
+            if model and model not in ordered:
+                ordered.append(model)
+        return ordered
 
     def _get_client(self):
         if self._client is None:
