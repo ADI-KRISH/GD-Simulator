@@ -93,6 +93,10 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     # Faster model for the practice personas' short spoken lines (empty = LLM_MODEL).
     persona_llm_model: str = ""
+    # Reasoning effort for models that think before answering (gpt-oss on Groq).
+    # Without it they spend the whole token cap thinking and return nothing, so a
+    # 150-token persona line comes back empty. low | medium | high.
+    llm_reasoning_effort: str = "low"
     llm_max_tokens: int = 2048
     llm_timeout_seconds: float = 60.0
     llm_max_retries: int = 3

@@ -53,6 +53,8 @@ class OpenAIProvider:
         (up to ten attempts, each capped at a minute) succeeds where the short generic
         backoff burns every retry inside the same window.
         """
+        if _thinks_first(request.get("model", "")) and settings.llm_reasoning_effort:
+            request.setdefault("reasoning_effort", settings.llm_reasoning_effort)
         for attempt in range(10):
             try:
                 if self._slots is None:
@@ -231,7 +233,16 @@ class OpenAIProvider:
                             "strict": _strict_compatible(schema),
                         },
                     }
-                response = await self._create(client, **request)
+                try:
+                    response = await self._create(client, **request)
+                except Exception as exc:
+                    # gpt-oss on Groq sometimes delivers its final answer as a call
+                    # to a tool named "json", which Groq rejects (tool_use_failed).
+                    # Asked again with tools off, it answers in content.
+                    if "tool_use_failed" not in str(exc):
+                        raise
+                    logger.info("model called an undeclared tool; asking for content")
+                    response = await self._create(client, **request, tool_choice="none")
             except Exception as exc:
                 raise LLMError(f"openai tool request failed: {exc}") from exc
 
@@ -319,6 +330,11 @@ def _parse_json(text: str) -> Any:
         if start == -1 or end <= start:
             raise
         return json.loads(text[start : end + 1])
+
+
+def _thinks_first(model: str) -> bool:
+    """A model that reasons before it answers and takes `reasoning_effort` (gpt-oss)."""
+    return "gpt-oss" in model
 
 
 def _rate_limit_wait(exc: Exception) -> float | None:
