@@ -113,3 +113,35 @@ async def test_any_other_failure_is_still_an_error():
             system="s", prompt="p", tools=[], schema={"type": "object"}
         )
     assert len(completions.requests) == 1
+
+
+async def test_a_dropped_connection_is_retried_not_failed(monkeypatch):
+    import httpx
+    import openai
+
+    from services.llm import openai_provider
+
+    async def no_wait(_seconds):
+        return None
+
+    monkeypatch.setattr(openai_provider.asyncio, "sleep", no_wait)
+    settings.openai_base_url = "https://api.groq.com/openai/v1"
+    provider = OpenAIProvider(model="openai/gpt-oss-120b", api_key="k")
+    dropped = openai.APIConnectionError(request=httpx.Request("POST", "https://api.groq.com"))
+    provider._client, completions = _client([dropped, _reply('{"score": 6}')])
+    result = await provider.complete_with_tools(
+        system="s", prompt="p", tools=[], schema={"type": "object"}
+    )
+    assert result.data == {"score": 6}
+    assert len(completions.requests) == 2
+
+
+async def test_a_verdict_with_broken_json_is_asked_for_once_more():
+    settings.openai_base_url = "https://api.groq.com/openai/v1"
+    provider = OpenAIProvider(model="openai/gpt-oss-120b", api_key="k")
+    provider._client, completions = _client([_reply('{"score": 6 "x": 1}'), _reply('{"score": 6}')])
+    result = await provider.complete_with_tools(
+        system="s", prompt="p", tools=[], schema={"type": "object"}
+    )
+    assert result.data == {"score": 6}
+    assert "not valid JSON" in completions.requests[1]["messages"][-1]["content"]

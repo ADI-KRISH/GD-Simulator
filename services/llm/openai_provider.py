@@ -99,6 +99,31 @@ class OpenAIProvider:
                     },
                 )
 
+    async def _tool_round(self, client, request: dict[str, Any]):
+        """One round of a tool-using call, surviving the two failures seen live.
+
+        gpt-oss on Groq sometimes delivers its final answer as a call to a tool
+        named "json", which Groq rejects (tool_use_failed); asked again with tools
+        off, it answers in content. And a dropped connection or a 5xx is retried
+        twice, briefly, where it used to fail the evaluator outright.
+        """
+        for attempt in range(3):
+            try:
+                try:
+                    return await self._create(client, **request)
+                except Exception as exc:
+                    if "tool_use_failed" not in str(exc):
+                        raise
+                    logger.info("model called an undeclared tool; asking for content")
+                    return await self._create(client, **request, tool_choice="none")
+            except Exception as exc:
+                if attempt == 2 or not _is_retryable(exc):
+                    raise
+                logger.warning(
+                    "tool round failed, retrying", extra={"attempt": attempt + 1, "error": str(exc)}
+                )
+                await asyncio.sleep(0.5 * 3**attempt)
+
     def _candidate_models(self, first: str) -> list[str]:
         """This call's model, then the configured fallbacks, then the main model."""
         fallbacks = [m.strip() for m in settings.llm_fallback_models.split(",") if m.strip()]
@@ -252,6 +277,7 @@ class OpenAIProvider:
         by_name = {tool.name: tool for tool in tools}
         invocations: list[ToolInvocation] = []
         input_tokens = output_tokens = 0
+        bad_json_retried = False
 
         for _round in range(max_rounds):
             try:
@@ -270,16 +296,7 @@ class OpenAIProvider:
                             "strict": _strict_compatible(schema),
                         },
                     }
-                try:
-                    response = await self._create(client, **request)
-                except Exception as exc:
-                    # gpt-oss on Groq sometimes delivers its final answer as a call
-                    # to a tool named "json", which Groq rejects (tool_use_failed).
-                    # Asked again with tools off, it answers in content.
-                    if "tool_use_failed" not in str(exc):
-                        raise
-                    logger.info("model called an undeclared tool; asking for content")
-                    response = await self._create(client, **request, tool_choice="none")
+                response = await self._tool_round(client, request)
             except Exception as exc:
                 raise LLMError(f"openai tool request failed: {exc}") from exc
 
@@ -325,7 +342,20 @@ class OpenAIProvider:
             try:
                 data = _parse_json(text)
             except json.JSONDecodeError as exc:
-                raise LLMError(f"tool-using response was not valid JSON: {exc}") from exc
+                if bad_json_retried:
+                    raise LLMError(f"tool-using response was not valid JSON: {exc}") from exc
+                # Asked once more: a dropped comma in a long verdict should not cost
+                # the candidate a whole dimension.
+                bad_json_retried = True
+                messages.append({"role": "assistant", "content": text})
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": "That reply was not valid JSON. Reply again with ONLY the "
+                        "JSON object, matching the schema exactly.",
+                    }
+                )
+                continue
 
             return LLMResult(
                 data=data,
