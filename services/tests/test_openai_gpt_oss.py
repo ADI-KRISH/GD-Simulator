@@ -145,3 +145,50 @@ async def test_a_verdict_with_broken_json_is_asked_for_once_more():
     )
     assert result.data == {"score": 6}
     assert "not valid JSON" in completions.requests[1]["messages"][-1]["content"]
+
+
+class Refused(Exception):
+    """Groq's tool_use_failed, with the call it refused in `failed_generation`."""
+
+    def __init__(self, generation: str):
+        super().__init__("Error code: 400 - {'error': {'code': 'tool_use_failed'}}")
+        self.body = {"error": {"code": "tool_use_failed", "failed_generation": generation}}
+
+
+async def test_an_answer_sent_to_an_undeclared_json_tool_is_taken_as_the_answer():
+    settings.openai_base_url = "https://api.groq.com/openai/v1"
+    provider = OpenAIProvider(model="openai/gpt-oss-120b", api_key="k")
+    refused = Refused('{"name": "json", "arguments": {"score": 7, "evidence": ["x"]}}')
+    provider._client, completions = _client([refused])
+    result = await provider.complete_with_tools(
+        system="s", prompt="p", tools=[], schema={"type": "object"}
+    )
+    assert result.data == {"score": 7, "evidence": ["x"]}
+    assert len(completions.requests) == 1, "no second call needed"
+
+
+async def test_a_real_tool_the_vendor_refused_is_run_as_meant():
+    from services.llm.base import ToolDefinition
+
+    ran: list[dict] = []
+
+    def score_if(dimension, hypothetical_score):
+        ran.append({"dimension": dimension, "score": hypothetical_score})
+        return {"overall": 71}
+
+    tool = ToolDefinition(
+        name="score_if", description="d", input_schema={"type": "object"}, handler=score_if
+    )
+    settings.openai_base_url = "https://api.groq.com/openai/v1"
+    provider = OpenAIProvider(model="openai/gpt-oss-120b", api_key="k")
+    refused = Refused(
+        '{"name": "score_if", "arguments": {"dimension": "leadership", "hypothetical_score": 8}}'
+    )
+    provider._client, completions = _client([refused, _reply('{"summary": "ok"}')])
+    result = await provider.complete_with_tools(
+        system="s", prompt="p", tools=[tool], schema={"type": "object"}
+    )
+    assert ran == [{"dimension": "leadership", "score": 8}]
+    assert result.data == {"summary": "ok"}
+    assert result.tool_calls[0].name == "score_if"
+    assert completions.requests[1]["messages"][-1]["role"] == "tool"

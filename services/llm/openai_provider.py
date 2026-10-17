@@ -100,12 +100,15 @@ class OpenAIProvider:
                 )
 
     async def _tool_round(self, client, request: dict[str, Any]):
-        """One round of a tool-using call, surviving the two failures seen live.
+        """One round of a tool-using call, surviving the failures seen live.
 
-        gpt-oss on Groq sometimes delivers its final answer as a call to a tool
-        named "json", which Groq rejects (tool_use_failed); asked again with tools
-        off, it answers in content. And a dropped connection or a 5xx is retried
-        twice, briefly, where it used to fail the evaluator outright.
+        gpt-oss on Groq makes tool calls Groq refuses to route (tool_use_failed):
+        a call to a tool named "json" carrying its final answer, or a call to a
+        real tool after being told to call none. Groq returns the call it refused
+        in `failed_generation`; that is raised as `MisroutedToolCall` for the loop
+        to honour — run the tool, or take the arguments as the answer. With no
+        readable `failed_generation`, the round is asked again with tools off.
+        A dropped connection or a 5xx is retried twice, briefly.
         """
         for attempt in range(3):
             try:
@@ -114,8 +117,17 @@ class OpenAIProvider:
                 except Exception as exc:
                     if "tool_use_failed" not in str(exc):
                         raise
-                    logger.info("model called an undeclared tool; asking for content")
-                    return await self._create(client, **request, tool_choice="none")
+                    if call := _refused_tool_call(exc):
+                        raise call from exc
+                    logger.info("model called a tool the vendor refused; asking for content")
+                    try:
+                        return await self._create(client, **request, tool_choice="none")
+                    except Exception as again:
+                        if call := _refused_tool_call(again):
+                            raise call from again
+                        raise
+            except MisroutedToolCall:
+                raise
             except Exception as exc:
                 if attempt == 2 or not _is_retryable(exc):
                     raise
@@ -297,6 +309,49 @@ class OpenAIProvider:
                         },
                     }
                 response = await self._tool_round(client, request)
+            except MisroutedToolCall as call:
+                tool = by_name.get(call.name)
+                if tool is None:
+                    # A call to an undeclared tool ("json") carries the final answer.
+                    return LLMResult(
+                        data=call.arguments,
+                        model=request["model"],
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        raw_text=json.dumps(call.arguments),
+                        metadata={"rounds": _round + 1, "recovered": call.name},
+                        tool_calls=invocations,
+                    )
+                # A real tool the vendor refused to route: run it, as it was meant.
+                result = await tool.invoke(call.arguments)
+                invocations.append(
+                    ToolInvocation(name=call.name, arguments=call.arguments, result=result)
+                )
+                call_id = f"recovered_{_round}"
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": call_id,
+                                "type": "function",
+                                "function": {
+                                    "name": call.name,
+                                    "arguments": json.dumps(call.arguments),
+                                },
+                            }
+                        ],
+                    }
+                )
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "content": json.dumps(result, default=str),
+                    }
+                )
+                continue
             except Exception as exc:
                 raise LLMError(f"openai tool request failed: {exc}") from exc
 
@@ -397,6 +452,41 @@ def _parse_json(text: str) -> Any:
         if start == -1 or end <= start:
             raise
         return json.loads(text[start : end + 1])
+
+
+class MisroutedToolCall(Exception):
+    """A tool call the vendor refused to route; the model's intent, recovered."""
+
+    def __init__(self, name: str, arguments: dict[str, Any]) -> None:
+        super().__init__(f"refused tool call: {name}")
+        self.name = name
+        self.arguments = arguments
+
+
+def _refused_tool_call(exc: Exception) -> MisroutedToolCall | None:
+    """The call inside a tool_use_failed error's `failed_generation`, if readable."""
+    body = getattr(exc, "body", None)
+    if not isinstance(body, dict):
+        return None
+    error = body.get("error", body)
+    raw = error.get("failed_generation") if isinstance(error, dict) else None
+    if not raw:
+        return None
+    try:
+        call = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if isinstance(call, list):
+        call = call[0] if call else None
+    if not isinstance(call, dict) or not isinstance(call.get("name"), str):
+        return None
+    arguments = call.get("arguments", call.get("parameters", {}))
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except json.JSONDecodeError:
+            return None
+    return MisroutedToolCall(call["name"], arguments if isinstance(arguments, dict) else {})
 
 
 def _thinks_first(model: str) -> bool:
