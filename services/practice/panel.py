@@ -155,6 +155,11 @@ def cue_text(cue: str | None, *, student: str, target: str = "", repeated: str =
             f"them in by name with a short, open question about the point just made. Do not "
             "answer it yourself."
         )
+    if cue == "hand":
+        return (
+            f"YOUR TASK NOW: {student} has raised their hand. In one short sentence, invite "
+            "them by name to speak. Do not add a point of your own."
+        )
     if cue == "redirect":
         return (
             f"YOUR TASK NOW: {student} has held most of the floor. Thank them briefly and hand "

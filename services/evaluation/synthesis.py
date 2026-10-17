@@ -93,6 +93,10 @@ right; a bare phrase is too thin to learn from.
 13. For every dimension, explain in `dimension_notes` what that dimension \
 measures and what this candidate's score means for them, so the numbers in the \
 report are not a mystery.
+14. If the candidate spoke little or not at all, be warm and encouraging, never \
+disappointed: not getting in is where nearly everyone starts. Make the feedback \
+about getting in — when a natural opening came, and one concrete sentence they \
+could have used to take it — not about what they failed to show.
 """
 
 RESPONSE_SCHEMA: dict[str, Any] = {

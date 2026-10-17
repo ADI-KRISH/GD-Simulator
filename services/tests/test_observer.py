@@ -336,3 +336,21 @@ async def test_state_updates_are_published(session_factory, live_with_transcript
         await observer_service.process_pending_chunks(db, gd, up_to_end=True)
         await db.commit()
     assert events.count("state.updated") == 3
+
+
+async def test_the_room_hears_the_latest_ideas(session_factory, live_with_transcript, monkeypatch):
+    """M14 FR-14.13: the "recent ideas" strip comes from the Observer's own state."""
+    frames: list[dict] = []
+
+    async def capture(session_id, frame):
+        frames.append(frame)
+
+    monkeypatch.setattr(observer_service.hub, "broadcast", capture)
+    async with session_factory() as db:
+        gd = await session_repo.get_session_by_id(db, live_with_transcript)
+        await observer_service.process_pending_chunks(db, gd, up_to_end=True)
+
+    ideas = [f for f in frames if f["type"] == "IDEAS_UPDATED"]
+    assert ideas, "each changed state reaches the room"
+    assert set(ideas[-1]["payload"]) >= {"ideas", "open_questions"}
+    assert len(ideas[-1]["payload"]["ideas"]) <= observer_service.RECENT_IDEAS

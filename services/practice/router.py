@@ -164,10 +164,17 @@ async def practice_socket(
                 await room.on_audio(message["bytes"])
                 continue
             try:
-                event = str(json.loads(message.get("text") or "{}").get("type", ""))
+                data = json.loads(message.get("text") or "{}")
+                event = str(data.get("type", "")) if isinstance(data, dict) else ""
             except ValueError:
                 continue
-            if event == "START":
+            if event == "TEXT":
+                # FR-14.19: a typed turn. Queued, so a wait for a line in progress
+                # never holds up this loop (which also carries PLAYBACK_ENDED).
+                room.submit_text(str(data.get("text", "")))
+            elif event == "RAISE_HAND":
+                await room.on_raise_hand()
+            elif event == "START":
                 try:
                     await room.start_session(user)
                 except DomainError as exc:

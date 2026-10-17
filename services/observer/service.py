@@ -37,6 +37,8 @@ logger = logging.getLogger(__name__)
 # How often to look for newly closed windows. Well under CHUNK_SECONDS so a
 # window is picked up soon after it closes without busy-looping.
 OBSERVER_INTERVAL_SECONDS = 10.0
+# How many of the latest arguments the room's "recent ideas" strip shows.
+RECENT_IDEAS = 3
 
 
 async def current_state(session: AsyncSession, session_id: uuid.UUID) -> RollingState:
@@ -114,6 +116,19 @@ async def process_pending_chunks(
                         "participation": {
                             label: m.participation_ratio for label, m in metrics.items()
                         },
+                    },
+                ),
+            )
+            # FR-14.13: the room's "recent ideas" strip — observations, not scores.
+            await hub.broadcast(
+                str(session_id),
+                server_frame(
+                    ServerEvent.IDEAS_UPDATED,
+                    str(session_id),
+                    {
+                        "chunk_index": index,
+                        "ideas": state.main_arguments[-RECENT_IDEAS:],
+                        "open_questions": state.unresolved_questions[-2:],
                     },
                 ),
             )

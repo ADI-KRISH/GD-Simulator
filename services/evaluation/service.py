@@ -40,7 +40,11 @@ from services.evaluation.aggregator import aggregate_session, normalise_weights
 from services.evaluation.graph import run_graph
 from services.evaluation.group_synthesis import synthesise_group
 from services.evaluation.models import AgentOutput, CandidateScore, EvaluationJob, Report
-from services.evaluation.report import build_candidate_report, build_group_report
+from services.evaluation.report import (
+    build_candidate_report,
+    build_group_report,
+    entry_moments,
+)
 from services.evaluation.supervisor import run as run_supervisor
 from services.evaluation.synthesis import synthesise
 from services.evaluation.tools import TurnRecord
@@ -309,6 +313,11 @@ async def run_job(session: AsyncSession, job: EvaluationJob) -> EvaluationJob:
     participants = await session_repo.list_active_participants(session, gd.id)
     labels = [p.candidate_label for p in participants]
     names = {p.candidate_label: p.display_name for p in participants}
+    # Who said each line, by name — the AI personas too, for the entry moments.
+    speaker_names = {
+        **{p["label"]: p["name"] for p in (gd.personas or []) if "label" in p},
+        **names,
+    }
     user_ids = {p.candidate_label: p.user_id for p in participants}
 
     if not labels:
@@ -413,6 +422,7 @@ async def run_job(session: AsyncSession, job: EvaluationJob) -> EvaluationJob:
             outputs=outcome.outputs_by_candidate.get(label, []),
             metrics=metrics.per_candidate[label],
             synthesis=syntheses[label].to_dict() if label in syntheses else {},
+            moments=entry_moments(segments, label, names.get(label, label), speaker_names),
         )
         await repo.add_report(
             session,

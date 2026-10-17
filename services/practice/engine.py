@@ -35,6 +35,7 @@ from services.practice import panel
 from services.practice import timing as clock
 from services.realtime.hub import hub
 from services.realtime.protocol import ServerEvent, server_frame
+from services.realtime.timer import announce_discussion
 from services.realtime.ws import broadcast_turns
 from services.session import repository as session_repo
 from services.session import service as session_service
@@ -64,6 +65,10 @@ STUDENT_SILENT_SECONDS = 40.0
 PERSONA_MAX_TOKENS = 400
 # How long a reply waits (in 0.1 s steps) for a line the student cut to unwind.
 CUT_LINE_WAIT_STEPS = 50
+# A typed turn (FR-14.19): its longest accepted length, and how long it waits (in
+# 0.1 s steps) for a persona's line to finish — typing never cuts anyone off.
+MAX_TYPED_CHARS = 600
+TYPED_WAIT_STEPS = 300
 # Near the end the table should not sit in silence waiting for a conclusion.
 WRAP_UP_IDLE_SECONDS = 6.0
 # After a persona speaks, chance that another persona follows on (max chain below).
@@ -155,6 +160,9 @@ class PracticeRoom:
         self.forced: tuple[str, str | None, str] | None = None  # (label, cue, target label)
         self.ai_question = ""  # the student just asked whether we are an AI
         self.rng = random.Random()
+        self.last_end = 0.0  # when the latest recorded turn ended
+        self.hands = 0  # raised hands (EC-14.10: a distinct entry style)
+        self._tasks: set[asyncio.Task] = set()  # typed turns in flight
 
     # ------------------------------------------------------------------ setup
 
@@ -174,14 +182,21 @@ class PracticeRoom:
                 await session_service.set_ready(db, gd, user, True)
                 await session_service.start_session(db, gd)
                 await db.commit()
-        await hub.broadcast(
-            self.sid, server_frame(ServerEvent.SESSION_STARTED, self.sid, {"phase": "preparation"})
-        )
+        if SessionState(gd.state) is SessionState.LIVE:
+            # No preparation (or a reconnect into a running session): the ticker never
+            # sees the move to LIVE, so the room is told here — or the page stayed on
+            # "Preparation", its composer disabled and its microphone deaf.
+            await announce_discussion(gd)
+        else:
+            await hub.broadcast(
+                self.sid,
+                server_frame(ServerEvent.SESSION_STARTED, self.sid, {"phase": "preparation"}),
+            )
         if self.idle is None:
             self.idle = asyncio.create_task(self._idle_loop(), name=f"practice-idle-{self.sid}")
 
     async def close(self) -> None:
-        tasks = [t for t in (self.burst, self.idle) if t and not t.done()]
+        tasks = [t for t in (self.burst, self.idle, *self._tasks) if t and not t.done()]
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -273,7 +288,55 @@ class PracticeRoom:
         text = transcription.text.strip()
         if len(re.findall(r"\w+", text)) < MIN_WORDS:
             return
+        await self._take_student_turn(start, end, text, cut)
 
+    def submit_text(self, text: str) -> None:
+        """Queue a typed turn without holding up the socket (it may wait for a line)."""
+        task = asyncio.create_task(self.on_text(text), name=f"practice-text-{self.sid}")
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def on_text(self, text: str) -> None:
+        """A typed turn (FR-14.19): the spoken path, minus speech-to-text.
+
+        Typing never cuts a persona off — a line being said finishes first. Then
+        the turn holds the floor for as long as it would take to say, and the
+        panel waits that out before answering, as it would for a spoken turn. It
+        used to be squeezed into the instant before "now": three typed points
+        came to two seconds of speaking time, and the scoring reads speaking time.
+        """
+        text = " ".join(text.split())[:MAX_TYPED_CHARS]
+        if len(re.findall(r"\w+", text)) < MIN_WORDS or await self._live_clock() is None:
+            return
+        for _ in range(TYPED_WAIT_STEPS):
+            if not self.speaking:
+                break
+            await asyncio.sleep(0.1)
+        now = self._now()
+        start = max(now, self.last_end)
+        end = start + estimate_seconds(text)
+        await self._take_student_turn(
+            start, end, text, None, hold=LISTEN_HOLD_SECONDS + (end - now)
+        )
+
+    async def on_raise_hand(self) -> None:
+        """FR-14.12: a raised hand; the moderator invites the student at the next gap."""
+        if not self.moderator or await self._live_clock() is None:
+            return
+        self.hands += 1
+        self.forced = (self.moderator, "hand", "")
+        busy = self.speaking or self.user_active or (self.burst and not self.burst.done())
+        if not busy:
+            self._start_burst()
+
+    async def _take_student_turn(
+        self, start: float, end: float, text: str, cut: str | None, hold: float | None = None
+    ) -> None:
+        """Record what the student said — spoken or typed — and let the panel answer.
+
+        `hold`: how long the panel waits before answering (a typed turn's spoken
+        length); by default the short "hear them out" pause.
+        """
         when = await self._timing()
         if when and when.converging and clock.looks_like_conclusion(text):
             self.concluded = True
@@ -292,7 +355,10 @@ class PracticeRoom:
                 self.forced = (self.moderator, "redirect", target)
         await self._announce(STUDENT_LABEL, self.student_name, text, changed, interrupts)
         await self._send_json(server_frame(ServerEvent.USER_TRANSCRIPT, self.sid, {"text": text}))
-        self._start_burst(addressed=self._addressed(text), hold=LISTEN_HOLD_SECONDS)
+        self._start_burst(
+            addressed=self._addressed(text),
+            hold=LISTEN_HOLD_SECONDS if hold is None else hold,
+        )
 
     def on_playback_ended(self) -> None:
         """The browser finished playing (or gave up on) the persona's line."""
@@ -339,6 +405,7 @@ class PracticeRoom:
         self.last_turn_of[label] = self.turn
         self.floor[label] = self.floor.get(label, 0.0) + max(0.0, end - start)
         self.last_text = text
+        self.last_end = max(self.last_end, end)
 
     def _choose(
         self, addressed: str | None = None, converging: bool = False
@@ -422,7 +489,7 @@ class PracticeRoom:
                 if label is None or self.user_active:
                     return
                 cut = await self._persona_turn(label, cue, target)
-                if cue == "open" or cut or self.user_active or self.concluded:
+                if cue in ("open", "hand") or cut or self.user_active or self.concluded:
                     return  # after an invitation the floor is the student's
                 if self.forced:
                     continue  # a turn is owed (the persona a redirect named): take it now
@@ -465,6 +532,9 @@ class PracticeRoom:
                     or (self.burst and not self.burst.done())
                 )
                 if busy:
+                    continue
+                if self.opened and self.forced:
+                    self._start_burst()  # a turn is owed (a raised hand): take it now
                     continue
                 if not self.opened and quiet >= OPENING_DELAY_SECONDS:
                     self.opened = True

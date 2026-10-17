@@ -231,6 +231,10 @@ def test_no_question_no_change():
 def _fast_room(monkeypatch):
     monkeypatch.setattr(engine, "PLAYBACK_SLACK_SECONDS", 0.0)
     monkeypatch.setattr(engine, "LISTEN_HOLD_SECONDS", 0.05)
+    # No browser reports playback here, so a line "plays" for its estimated length;
+    # and a random second persona chaining on made these tests flaky past 10 s.
+    monkeypatch.setattr(engine, "estimate_seconds", lambda _text: 0.3)
+    monkeypatch.setattr(engine, "CHAIN_PROBABILITY", 0.0)
 
 
 async def _room(client: AsyncClient, auth: dict, session_factory):
@@ -363,3 +367,114 @@ async def test_a_line_the_student_cut_does_not_swallow_the_reply(
     await asyncio.wait_for(room.burst, timeout=10)
     assert calls, "the student's turn was answered"
     await room.close()
+
+
+# ------------------------------------------------- typed turns, raised hands
+
+
+async def test_a_typed_turn_is_recorded_and_answered(client, candidate_auth, session_factory):
+    """FR-14.19: the same scheduler and scoring as a spoken turn, minus speech-to-text."""
+    from services.session import repository as session_repo
+
+    room, _ = await _room(client, candidate_auth, session_factory)
+    calls = _script(room)
+    await room.on_text("I think internships teach what lectures cannot.")
+    await asyncio.wait_for(room.burst, timeout=10)
+    assert room.lines[0] == ("Asha", "I think internships teach what lectures cannot.")
+    assert calls, "a persona answered the typed turn"
+    async with session_factory() as db:
+        turns = await session_repo.list_turns(db, room.session_id)
+    student = [t for t in turns if t.candidate_label == "A"]
+    assert len(student) == 1 and student[0].interrupted_label is None
+    assert student[0].end - student[0].start == pytest.approx(0.3), "as long as saying it takes"
+    await room.close()
+
+
+async def test_typing_never_cuts_a_persona_off(client, candidate_auth, session_factory):
+    room, _ = await _room(client, candidate_auth, session_factory)
+    _script(room)
+    room.speaking = "P1"  # a persona mid-line, not cut
+    typed = asyncio.create_task(room.on_text("Wait, who actually pays for all this?"))
+    await asyncio.sleep(0.3)
+    assert room.lines == [], "the typed turn waits for the line to finish"
+    room.speaking = None
+    await asyncio.wait_for(typed, timeout=10)
+    assert room.lines[-1][1] == "Wait, who actually pays for all this?"
+    await room.close()
+
+
+async def test_a_one_word_typed_turn_is_ignored(client, candidate_auth, session_factory):
+    room, _ = await _room(client, candidate_auth, session_factory)
+    await room.on_text("ok")
+    assert room.lines == []
+    await room.close()
+
+
+async def test_a_typed_are_you_a_bot_gets_an_honest_answer(client, candidate_auth, session_factory):
+    room, sent = await _room(client, candidate_auth, session_factory)
+    _script(room, "Good question, but let's get back to the cost.")
+    await room.on_text("Hang on, are you a bot?")
+    await asyncio.wait_for(room.burst, timeout=10)
+    spoken = next(f for f in sent if f.get("type") == "PERSONA_AUDIO_START")
+    assert spoken["payload"]["text"].startswith("I'm an AI participant")
+    await room.close()
+
+
+async def test_a_raised_hand_brings_the_moderators_invitation(
+    client, candidate_auth, session_factory
+):
+    """FR-14.12: the moderator invites the student, then the floor is theirs."""
+    room, _ = await _room(client, candidate_auth, session_factory)
+    calls = _script(room, "Asha, you had your hand up. Go ahead.")
+    await room.on_raise_hand()
+    await asyncio.wait_for(room.burst, timeout=10)
+    assert calls == [(room.moderator, "hand")]
+    assert room.hands == 1
+    await room.close()
+
+
+def test_the_hand_cue_invites_by_name():
+    assert "has raised their hand" in _system("P3", cue="hand")
+
+
+async def test_starting_with_no_preparation_tells_the_room_the_discussion_is_on(
+    client, candidate_auth, session_factory, monkeypatch
+):
+    """Seen in the browser: with no preparation the page stayed on "Preparation"."""
+    from services.practice import engine as engine_module
+
+    created = await client.post(
+        "/api/v1/practice",
+        json={
+            "topic": "Should internships be mandatory for graduation?",
+            "duration_seconds": 120,
+            "preparation_seconds": 0,
+            "personas": [{"preset": "arjun"}],
+        },
+        headers=candidate_auth,
+    )
+    sid = created.json()["id"]
+    frames: list[dict] = []
+
+    async def capture(session_id, frame):
+        frames.append(frame)
+
+    monkeypatch.setattr(engine_module.hub, "broadcast", capture)
+    monkeypatch.setattr("services.realtime.timer.hub.broadcast", capture)
+    room = PracticeRoom(session_factory, uuid.UUID(sid), "Asha", _noop, _noop)
+    await room.load()
+    me = await client.get("/api/v1/auth/me", headers=candidate_auth)
+    from services.auth import repository as auth_repo
+
+    async with session_factory() as db:
+        user = await auth_repo.get_user_by_id(db, uuid.UUID(me.json()["id"]))
+    await room.start_session(user)
+    kinds = [(f["type"], f["payload"].get("phase")) for f in frames]
+    assert ("SESSION_STARTED", "discussion") in kinds
+    assert any(f["type"] == "TOPIC_RELEASED" for f in frames)
+    assert any(f["type"] == "TIMER_STARTED" for f in frames)
+    await room.close()
+
+
+async def _noop(*_args):
+    return None
