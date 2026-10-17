@@ -241,6 +241,38 @@ async def test_the_loop_processes_each_closed_window_once(session_factory, live_
     assert [s.chunk_index for s in states] == [0, 1, 2]
 
 
+async def test_each_window_is_committed_before_the_next_model_call(
+    session_factory, live_with_transcript, monkeypatch
+):
+    """A write held across a model call locked every other SQLite writer.
+
+    On a rate-limited free tier one observation can take minutes; with the
+    windows folded in one transaction, registration answered 500 meanwhile
+    (2026-10-17). Each window's state is committed before the next call.
+    """
+    events: list[str] = []
+    real_observe = observer_service.observe
+
+    async def watched_observe(*args, **kwargs):
+        events.append("observe")
+        return await real_observe(*args, **kwargs)
+
+    monkeypatch.setattr(observer_service, "observe", watched_observe)
+    async with session_factory() as db:
+        gd = await session_repo.get_session_by_id(db, live_with_transcript)
+        real_commit = db.commit
+
+        async def watched_commit():
+            events.append("commit")
+            await real_commit()
+
+        monkeypatch.setattr(db, "commit", watched_commit)
+        await observer_service.process_pending_chunks(db, gd, up_to_end=True)
+
+    assert events.count("observe") == 3
+    assert "observe,observe" not in ",".join(events)
+
+
 async def test_the_rolling_state_never_replaces_the_transcript(
     session_factory, live_with_transcript
 ):

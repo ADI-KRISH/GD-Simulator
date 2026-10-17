@@ -193,6 +193,31 @@ async def test_full_pipeline_produces_scores_and_reports(session_factory, ended_
         assert sum(1 for r in reports if r.candidate_label is None) == 1
 
 
+async def test_no_write_transaction_is_open_while_the_agents_run(
+    session_factory, ended_session, monkeypatch
+):
+    """The agents' model calls take minutes on a free tier.
+
+    A transaction held across them locked every other SQLite writer and kept
+    the job itself invisible (GET .../evaluation answered 404) until the end
+    (2026-10-17). The job's progress is committed before the agents run.
+    """
+    open_at_dispatch: list[bool] = []
+    real_orchestrate = eval_service._orchestrate
+    async with session_factory() as db:
+
+        async def watched(*args, **kwargs):
+            open_at_dispatch.append(db.in_transaction())
+            return await real_orchestrate(*args, **kwargs)
+
+        monkeypatch.setattr(eval_service, "_orchestrate", watched)
+        job = await eval_service.run_for_session(db, ended_session)
+        await db.commit()
+
+    assert open_at_dispatch == [False]
+    assert EvaluationState(job.state) is EvaluationState.COMPLETED
+
+
 async def test_every_dimension_score_carries_evidence(session_factory, ended_session):
     """NFR-08 / claude.md invariant 6: no unexplained numbers."""
     async with session_factory() as db:

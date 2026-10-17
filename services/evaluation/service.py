@@ -294,6 +294,12 @@ async def run_job(session: AsyncSession, job: EvaluationJob) -> EvaluationJob:
     job.started_at = job.started_at or gd.ended_at
     # A retry must not blend old and new agent verdicts (design §39).
     await repo.clear_agent_outputs(session, job.id)
+    # No write transaction may stay open across model calls: on SQLite it locks
+    # out every other writer for as long as the evaluation runs, which on a
+    # rate-limited free tier is minutes. So the job's progress is committed at
+    # each step that precedes a model call — which also lets a student see the
+    # job as preparing or running instead of a 404.
+    await session.commit()
 
     # 1. Finalise the inputs (design §18): transcript, rolling state, metrics.
     await observer_service.process_pending_chunks(session, gd, up_to_end=True)
@@ -317,6 +323,7 @@ async def run_job(session: AsyncSession, job: EvaluationJob) -> EvaluationJob:
     #    aggregate, synthesise. LangGraph runs this as a state graph; the
     #    `native` engine is the same stages driven by plain asyncio.
     await _set_job_state(session, job, EvaluationState.RUNNING)
+    await session.commit()
     outcome = await _orchestrate(
         gd,
         labels,

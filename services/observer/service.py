@@ -91,6 +91,11 @@ async def process_pending_chunks(
                 state=result.state.model_dump(),
             ),
         )
+        # Each window is committed as it is folded in, so the next window's LLM
+        # call never runs inside a write transaction. On SQLite one held across
+        # a rate-limited call locked out every other writer for minutes
+        # (registration answered 500 while a report was being made).
+        await session.commit()
         state = result.state
         if result.changed:
             updated += 1
