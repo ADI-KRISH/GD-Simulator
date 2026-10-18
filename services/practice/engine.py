@@ -30,6 +30,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from services.ai_platform.bridge import UNNAMED_STUDENT
 from services.llm import LLMError, get_persona_llm_provider
 from services.practice import panel
 from services.practice import timing as clock
@@ -126,7 +127,13 @@ class PracticeRoom:
         self.factory = factory
         self.session_id = session_id
         self.sid = str(session_id)
-        self.student_name = student_name
+        # Captions show what the account says; the prompts need a name the panel
+        # can say. A platform student with none is "Student" on screen, but that
+        # is a role: told to invite "Student" by name, the moderator invited
+        # himself (19 Oct). So they are "the student", addressed as "you".
+        self.student_display = student_name
+        self.student_named = student_name.strip() not in ("", UNNAMED_STUDENT)
+        self.student_name = student_name if self.student_named else "the student"
         self._send_json = send_json
         self._send_bytes = send_bytes
 
@@ -360,7 +367,7 @@ class PracticeRoom:
             if target:
                 self.redirects += 1
                 self.forced = (self.moderator, "redirect", target)
-        await self._announce(STUDENT_LABEL, self.student_name, text, changed, interrupts)
+        await self._announce(STUDENT_LABEL, self.student_display, text, changed, interrupts)
         await self._send_json(server_frame(ServerEvent.USER_TRANSCRIPT, self.sid, {"text": text}))
         self._start_burst(
             addressed=self._addressed(text),
@@ -578,6 +585,7 @@ class PracticeRoom:
         system = panel.persona_system(
             persona,
             student=self.student_name,
+            named=self.student_named,
             others=others,
             topic=topic,
             max_words=clock.MAX_WORDS.get(when.phase, 45),

@@ -218,6 +218,47 @@ async def test_no_write_transaction_is_open_while_the_agents_run(
     assert EvaluationState(job.state) is EvaluationState.COMPLETED
 
 
+async def test_a_platform_students_results_go_to_the_skill_graph_after_a_commit(
+    session_factory, ended_session, monkeypatch
+):
+    """Wrap-up Day 4: the report done, M04 hears about the platform's students.
+
+    Only the candidate whose account came from the platform is sent, and the
+    job's writes are committed first — M04's calls are network calls.
+    """
+    from services.ai_platform.bridge import platform_email
+    from services.auth import repository as auth_repo
+    from services.common.config import settings
+
+    subject = str(uuid.uuid4())
+    async with session_factory() as db:
+        participants = await session_repo.list_active_participants(db, ended_session)
+        platform_label = participants[0].candidate_label
+        user = await auth_repo.get_user_by_id(db, participants[0].user_id)
+        user.email = platform_email(subject)
+        await db.commit()
+
+    sent: list[tuple] = []
+    monkeypatch.setattr(settings, "platform_bridge", True)
+    async with session_factory() as db:
+
+        async def recorded(session_id, scores, segments, subjects):
+            sent.append((session_id, set(scores), len(segments), subjects, db.in_transaction()))
+            return 0
+
+        monkeypatch.setattr(eval_service.platform_skill_graph, "send_results", recorded)
+        job = await eval_service.run_for_session(db, ended_session)
+        await db.commit()
+
+    assert EvaluationState(job.state) is EvaluationState.COMPLETED
+    assert len(sent) == 1
+    session_id, labels, n_segments, subjects, in_transaction = sent[0]
+    assert session_id == str(ended_session)
+    assert labels == {"A", "B", "C"} and n_segments == len(SCRIPT)
+    assert subjects == {platform_label: subject}
+    assert in_transaction is False
+
+
 async def test_every_dimension_score_carries_evidence(session_factory, ended_session):
     """NFR-08 / claude.md invariant 6: no unexplained numbers."""
     async with session_factory() as db:

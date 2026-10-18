@@ -61,9 +61,12 @@ class Settings(BaseSettings):
     object_store: str = "filesystem"
 
     # --- Speech (FR-13) ---
-    # auto | elevenlabs | whisper | stub. `auto` prefers ElevenLabs Scribe when a
-    # key is set, then Whisper, then the stub.
+    # auto | elevenlabs | openai | whisper | stub. `auto` prefers ElevenLabs Scribe
+    # when a key is set, then Whisper, then the stub. `openai` is any
+    # OpenAI-compatible /audio/transcriptions on OPENAI_BASE_URL with the LLM key
+    # (Groq serves Whisper there: OPENAI_STT_MODEL=whisper-large-v3-turbo).
     stt_provider: str = "auto"
+    openai_stt_model: str = "whisper-1"
     whisper_model: str = "base"
 
     # --- ElevenLabs (practice mode voice) ---
@@ -100,6 +103,12 @@ class Settings(BaseSettings):
     # Models to move to while one is rate-limited, comma-separated (same endpoint and
     # key; each model has its own per-minute bucket). e.g. openai/gpt-oss-20b.
     llm_fallback_models: str = ""
+    # --- The AI Interviewer platform (M14) ---
+    # Sign in with the platform's session, and send results to its skill graph.
+    # Off by default: the platform's launcher turns it on (PLATFORM_BRIDGE=1).
+    platform_bridge: bool = False
+    # The skill graph (M04), which records GD results as evidence.
+    m04_url: str = "http://127.0.0.1:8104"
     llm_max_tokens: int = 2048
     llm_timeout_seconds: float = 60.0
     llm_max_retries: int = 3

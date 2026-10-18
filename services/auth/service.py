@@ -46,7 +46,8 @@ async def register(session: AsyncSession, payload: RegisterRequest) -> User:
     return created
 
 
-async def _issue_pair(session: AsyncSession, user: User) -> TokenPair:
+async def issue_pair(session: AsyncSession, user: User) -> TokenPair:
+    """A fresh access + refresh pair for a user who has proved who they are."""
     access = create_access_token(user.id, user.role)
     refresh = create_refresh_token(user.id, user.role)
     await repo.store_refresh_token(session, refresh.jti, user.id, refresh.expires_at)
@@ -69,7 +70,7 @@ async def login(session: AsyncSession, payload: LoginRequest) -> TokenPair:
     if not user.is_active:
         raise AuthenticationError("account is disabled")
 
-    return await _issue_pair(session, user)
+    return await issue_pair(session, user)
 
 
 async def refresh_tokens(session: AsyncSession, refresh_token: str) -> TokenPair:
@@ -84,7 +85,7 @@ async def refresh_tokens(session: AsyncSession, refresh_token: str) -> TokenPair
 
     # Rotate: the presented token dies with the request that used it.
     await repo.revoke_refresh_token(session, claims.jti)
-    return await _issue_pair(session, user)
+    return await issue_pair(session, user)
 
 
 async def logout(session: AsyncSession, refresh_token: str) -> None:

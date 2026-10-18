@@ -21,3 +21,8 @@ langgraph==0.2.60
 
 # Free neural voices for TTS_PROVIDER=edge (practice personas). Pure Python.
 edge-tts==7.3.1
+
+# The AI Interviewer platform (M14): its identity contract and service headers.
+# sqlmodel is pinned because ai-core's own range would lift pydantic past 2.10.
+ai-core @ git+https://github.com/MNEMOS-PREP/Platform_Core@v0.38.0#subdirectory=python
+sqlmodel==0.0.22

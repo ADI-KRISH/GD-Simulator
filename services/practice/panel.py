@@ -139,26 +139,29 @@ def angle_text(angle: str | None) -> str:
     return ""
 
 
-def cue_text(cue: str | None, *, student: str, target: str = "", repeated: str = "") -> str:
-    """The instruction for one special turn."""
+def cue_text(
+    cue: str | None, *, student: str, target: str = "", repeated: str = "", named: bool = True
+) -> str:
+    """The instruction for one special turn. `named`: the student has a name to say."""
     if not cue:
         return ""
+    by_name = " by name" if named else ""
     if cue == "open":
         return (
             "YOUR TASK NOW: you are opening the discussion. In one or two sentences, put the "
-            f"topic in plain words, then invite {student} by name to give their view first. "
+            f"topic in plain words, then invite {student}{by_name} to give their view first. "
             "Do not argue your own position yet."
         )
     if cue == "invite":
         return (
             f"YOUR TASK NOW: {student} has not spoken for a while. In one sentence, invite "
-            f"them in by name with a short, open question about the point just made. Do not "
+            f"them in{by_name} with a short, open question about the point just made. Do not "
             "answer it yourself."
         )
     if cue == "hand":
         return (
             f"YOUR TASK NOW: {student} has raised their hand. In one short sentence, invite "
-            "them by name to speak. Do not add a point of your own."
+            f"them{by_name} to speak. Do not add a point of your own."
         )
     if cue == "redirect":
         return (
@@ -197,6 +200,7 @@ def persona_system(
     target: str = "",
     repeated: str = "",
     asked_ai: bool = False,
+    named: bool = True,
 ) -> str:
     """The whole system prompt for one persona line.
 
@@ -224,6 +228,11 @@ def persona_system(
             f"{student} above all — gets their turn, and close it. Between those moments you "
             "take part like anyone else."
         )
+    if not named:
+        parts.append(
+            "You do not know the student's name. When you address them, say 'you'; never "
+            "call them by a name you make up, and never mistake them for one of the panel."
+        )
     parts.append(RULES)
     parts.append(
         "Speak the way people really talk, because your words are read out loud: short "
@@ -240,7 +249,9 @@ def persona_system(
             "words, say plainly that you are an AI participant, then carry on with the "
             "discussion."
         )
-    if instruction := cue_text(cue, student=student, target=target, repeated=repeated):
+    if instruction := cue_text(
+        cue, student=student, target=target, repeated=repeated, named=named
+    ):
         parts.append(instruction)
     parts.append(
         'Return JSON: {"speak": <bool>, "is_conclusion": <bool>, "text": "<what you say next>"}.'

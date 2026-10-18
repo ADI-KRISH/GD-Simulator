@@ -5,9 +5,11 @@ that: callers depend on `STTProvider`. Swapping in a managed ASR provider means
 adding one class here (claude.md "keep the LLM, STT, and media-server
 integrations behind thin interfaces").
 
-Two providers ship:
+Providers:
 
 * `WhisperSTT`   — faster-whisper, running locally on CPU. The real path.
+* `ElevenLabsSTT`, `OpenAICompatibleSTT` — managed ASR over HTTP, one
+                   utterance at a time (practice mode).
 * `StubSTT`      — deterministic, no model download, no network. Used by the
                    test suite and by anyone who wants to exercise the pipeline
                    end to end before pulling ~1 GB of model weights.
@@ -143,6 +145,58 @@ class ElevenLabsSTT:
         )
 
 
+class OpenAICompatibleSTT:
+    """Any OpenAI-compatible `/audio/transcriptions`: one short utterance in.
+
+    The same endpoint and key as the LLM (`OPENAI_BASE_URL`), so on Groq it is
+    Whisper large-v3 under the organization already in use, and on OpenAI it is
+    `whisper-1`. Nothing to install and no CPU spent on this machine.
+    """
+
+    name = "openai"
+
+    def __init__(self, api_key: str, model: str, base_url: str) -> None:
+        self._key = api_key
+        self._model = model
+        self._base = (base_url or "https://api.openai.com/v1").rstrip("/")
+
+    async def transcribe(self, audio: bytes, *, language: str | None = None) -> Transcription:
+        import httpx
+
+        data = {"model": self._model, "response_format": "verbose_json"}
+        if language:
+            data["language"] = language
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    f"{self._base}/audio/transcriptions",
+                    headers={"Authorization": f"Bearer {self._key}"},
+                    data=data,
+                    files={"file": ("utterance.wav", audio, "audio/wav")},
+                )
+            response.raise_for_status()
+            body = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise RuntimeError(f"speech-to-text failed: {exc}") from exc
+
+        segments = body.get("segments") or []
+        utterances = [
+            Utterance(
+                start=float(s.get("start", 0.0)),
+                end=float(s.get("end", 0.0)),
+                text=str(s.get("text", "")).strip(),
+                confidence=_logprob_to_confidence(float(s.get("avg_logprob", -0.5))),
+            )
+            for s in segments
+            if str(s.get("text", "")).strip()
+        ]
+        text = str(body.get("text", "")).strip()
+        if not utterances and text:
+            end = float(body.get("duration") or 0.0)
+            utterances = [Utterance(start=0.0, end=end, text=text, confidence=0.9)]
+        return Transcription(utterances=utterances, language=body.get("language") or "en")
+
+
 class WhisperSTT:
     """Local Whisper via faster-whisper (design §54: "Whisper, run locally").
 
@@ -243,6 +297,12 @@ def get_stt_provider() -> STTProvider:
     if choice == "elevenlabs" or (choice == "auto" and settings.elevenlabs_api_key):
         _provider = ElevenLabsSTT(
             settings.elevenlabs_api_key, settings.elevenlabs_stt_model, settings.elevenlabs_base_url
+        )
+    elif choice == "openai":
+        _provider = OpenAICompatibleSTT(
+            settings.llm_api_key or settings.openai_api_key,
+            settings.openai_stt_model,
+            settings.openai_base_url,
         )
     elif choice == "stub":
         _provider = StubSTT()

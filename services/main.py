@@ -16,11 +16,14 @@ from fastapi.responses import JSONResponse
 from prometheus_fastapi_instrumentator import Instrumentator
 from sqlalchemy import text
 
+from services.ai_platform.bridge import router as platform_router
+from services.ai_platform.deps import router as platform_deps_router
 from services.auth.router import router as auth_router
 from services.common.config import settings
 from services.common.db import engine
 from services.common.errors import DomainError
 from services.common.logging import configure_logging
+from services.common.redis_client import DISABLED as REDIS_DISABLED
 from services.common.redis_client import close_redis, ping_redis
 from services.evaluation.router import router as evaluation_router
 from services.evaluation.worker import run_worker
@@ -94,7 +97,7 @@ async def domain_error_handler(request: Request, exc: DomainError) -> JSONRespon
 async def health() -> dict:
     """Liveness plus dependency status. Never fails the request when a
     dependency is down — the caller decides what to do with `degraded`."""
-    checks = {"database": False, "redis": False}
+    checks: dict[str, bool | None] = {"database": False, "redis": False}
     try:
         async with engine.connect() as conn:
             await conn.execute(text("SELECT 1"))
@@ -102,10 +105,13 @@ async def health() -> dict:
     except Exception as exc:
         logger.warning("database health check failed", extra={"error": str(exc)})
 
-    checks["redis"] = await ping_redis()
+    # Switched off by configuration (no-Docker mode) is not a fault: every
+    # caller already runs without it, so it does not make the service degraded.
+    redis_off = settings.redis_url == REDIS_DISABLED
+    checks["redis"] = None if redis_off else await ping_redis()
 
     return {
-        "status": "ok" if all(checks.values()) else "degraded",
+        "status": "ok" if all(v for v in checks.values() if v is not None) else "degraded",
         "env": settings.app_env,
         "checks": checks,
     }
@@ -121,3 +127,5 @@ app.include_router(notifications_router)
 app.include_router(realtime_router)
 app.include_router(simulation_router)
 app.include_router(practice_router)
+app.include_router(platform_router)
+app.include_router(platform_deps_router)

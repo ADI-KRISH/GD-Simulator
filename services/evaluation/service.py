@@ -20,6 +20,9 @@ from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from services.ai_platform import skill_graph as platform_skill_graph
+from services.ai_platform.bridge import platform_subject
+from services.auth import repository as auth_repo
 from services.common.config import settings
 from services.common.contracts import (
     EvaluationArtifacts,
@@ -503,7 +506,26 @@ async def run_job(session: AsyncSession, job: EvaluationJob) -> EvaluationJob:
             "engine": settings.evaluation_engine,
         },
     )
+    # The platform's skill graph (M04) hears about it: after a commit, so no
+    # write transaction is held across the calls, and never at the report's cost.
+    if settings.platform_bridge:
+        subjects = await _platform_subjects(session, user_ids)
+        await session.commit()
+        await platform_skill_graph.send_results(str(gd.id), scores, segments, subjects)
     return job
+
+
+async def _platform_subjects(
+    session: AsyncSession, user_ids: dict[str, uuid.UUID | None]
+) -> dict[str, str]:
+    """Candidate label -> platform subject, for candidates who came from the platform."""
+    subjects: dict[str, str] = {}
+    for label, user_id in user_ids.items():
+        user = await auth_repo.get_user_by_id(session, user_id) if user_id else None
+        subject = platform_subject(user.email) if user else None
+        if subject:
+            subjects[label] = subject
+    return subjects
 
 
 async def _increment_sessions_completed(session: AsyncSession, user_ids: list) -> None:

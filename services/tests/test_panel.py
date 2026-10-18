@@ -75,10 +75,10 @@ def test_without_a_natural_moderator_the_first_persona_runs_it():
 # ------------------------------------------------------------- prompts
 
 
-def _system(label="P1", **kwargs):
+def _system(label="P1", student="Asha", **kwargs):
     return panel.persona_system(
         PERSONAS[label],
-        student="Asha",
+        student=student,
         others="the others",
         topic="Mandatory internships",
         max_words=35,
@@ -106,6 +106,31 @@ def test_only_the_moderator_is_given_the_room():
 
 def test_the_opening_cue_invites_the_student_by_name():
     assert "invite Asha by name" in _system("P3", cue="open")
+
+
+def test_a_student_with_no_name_is_addressed_as_you_never_by_an_invented_one():
+    """19 Oct: told to invite "Student" by name, the moderator invited himself."""
+    system = _system("P3", cue="open", student="the student", named=False)
+    assert "invite the student to give their view first" in system
+    assert "by name" not in system
+    assert "say 'you'" in system and "never mistake them for one of the panel" in system
+    assert "say 'you'" not in _system("P3", cue="open")
+
+
+def test_the_platforms_nameless_student_is_the_student_to_the_panel(session_factory):
+    from services.ai_platform.bridge import UNNAMED_STUDENT
+
+    async def nothing(_):
+        return None
+
+    room = PracticeRoom(session_factory, uuid.uuid4(), UNNAMED_STUDENT, nothing, nothing)
+    assert (room.student_name, room.student_named, room.student_display) == (
+        "the student",
+        False,
+        UNNAMED_STUDENT,
+    )
+    named = PracticeRoom(session_factory, uuid.uuid4(), "Asha", nothing, nothing)
+    assert (named.student_name, named.student_named) == ("Asha", True)
 
 
 def test_a_redirect_names_the_persona_handed_the_floor():
