@@ -57,9 +57,9 @@ def test_a_silent_candidates_debrief_is_about_getting_in():
         "A", "Asha Rao", _score(), [], _metrics(0, 0.0), moments=moments
     )
     assert report.weaknesses[0].startswith("You didn't come into the discussion this time")
-    assert (
-        "At 0:04, Chitra turned to you: \"We're here to discuss internships."
-        in report.weaknesses[1]
+    # The sentence that names them — the invitation — not the first sixteen words.
+    assert report.weaknesses[1].startswith(
+        'At 0:04, Chitra turned to you: "Asha, what\'s your take first?"'
     )
     assert "Overall:" not in report.feedback
     assert "landed" not in report.feedback
@@ -71,3 +71,39 @@ def test_a_quiet_candidate_is_not_told_their_points_landed():
     joined = " ".join(report.weaknesses)
     assert "less than an even share" in joined
     assert "landed" not in joined
+
+
+def test_a_quiet_candidates_synthesis_is_given_the_openings():
+    """Rule 14: the narrative is built on real moments, not on what was missing."""
+    from services.evaluation.synthesis import build_prompt, openings_for
+
+    openings = openings_for("A", _metrics(0, 0.0), SEGMENTS)
+    assert openings == [
+        "  0:04 We're here to discuss internships. Asha, what's your take first?",
+        "  1:15 asha, do you agree with Arjun on that?",
+    ]
+    prompt = build_prompt("A", [], _metrics(0, 0.0), "Internships", [], openings)
+    assert "OPENINGS (questions others put to the group" in prompt
+
+
+def test_an_active_candidate_gets_no_openings_block():
+    from services.evaluation.synthesis import openings_for
+
+    assert openings_for("A", _metrics(6, 0.4), SEGMENTS) == []
+
+
+async def test_a_silent_candidates_narrative_is_kind_and_names_the_first_opening():
+    """Told rule 14, the model still opened with "you contributed nothing"; now it
+    is written without a model, from the openings."""
+    from services.common.contracts import EvaluationOutput
+    from services.evaluation.synthesis import synthesise
+
+    output = EvaluationOutput.model_construct(dimension="communication", score=1.0)
+    result = await synthesise(
+        "A", [output], {"communication": 1.0}, _metrics(0, 0.0), "T", SEGMENTS
+    )
+    assert result.model == "deterministic"
+    assert result.summary.startswith("You stayed quiet in this one")
+    assert "The first came at 0:04" in result.summary
+    for phrase in ("contributed nothing", "failed", "bottom", "very low"):
+        assert phrase not in result.summary.lower()

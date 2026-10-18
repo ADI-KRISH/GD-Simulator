@@ -69,6 +69,10 @@ CUT_LINE_WAIT_STEPS = 50
 # 0.1 s steps) for a persona's line to finish — typing never cuts anyone off.
 MAX_TYPED_CHARS = 600
 TYPED_WAIT_STEPS = 300
+# Lines of the discussion each persona prompt carries. A persona line costs ~1.1K
+# tokens on Groq (measured 2026-10-19) against a free tier's 8K tokens a minute
+# per model; ten lines instead of sixteen saves ~15% with no loss of context.
+HISTORY_LINES = 10
 # Near the end the table should not sit in silence waiting for a conclusion.
 WRAP_UP_IDLE_SECONDS = 6.0
 # After a persona speaks, chance that another persona follows on (max chain below).
@@ -347,6 +351,9 @@ class PracticeRoom:
         self._note_turn(STUDENT_LABEL, start, end, text)
         self.student_spoke_at = time.monotonic()
         self.ai_question = text if panel.asked_if_ai(text) else ""
+        if self.forced and self.forced[1] == "hand":
+            # They came in on their own: inviting them now would come after the fact.
+            self.forced = None
         # EC-14.2: the student holds most of the talk; the moderator hands it on.
         if self.moderator and panel.should_redirect(self.floor, self.redirects):
             target = panel.quietest(self.personas, self.floor, exclude=self.moderator)
@@ -562,7 +569,7 @@ class PracticeRoom:
             p["name"] for p in self.personas.values() if p["label"] != persona["label"]
         )
         history = (
-            "\n".join(f"{who}: {text}" for who, text in self.lines[-16:])
+            "\n".join(f"{who}: {text}" for who, text in self.lines[-HISTORY_LINES:])
             or "(nobody has spoken yet)"
         )
         async with self.factory() as db:

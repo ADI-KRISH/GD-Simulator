@@ -93,10 +93,12 @@ right; a bare phrase is too thin to learn from.
 13. For every dimension, explain in `dimension_notes` what that dimension \
 measures and what this candidate's score means for them, so the numbers in the \
 report are not a mystery.
-14. If the candidate spoke little or not at all, be warm and encouraging, never \
-disappointed: not getting in is where nearly everyone starts. Make the feedback \
-about getting in — when a natural opening came, and one concrete sentence they \
-could have used to take it — not about what they failed to show.
+14. If the candidate spoke little or not at all (see MEASURED BEHAVIOUR), be warm \
+and encouraging, never disappointed: not getting in is where nearly everyone \
+starts. Open `summary` with that, not with the score or what was missing. Build the \
+feedback on the OPENINGS listed: when a natural moment came, and one concrete \
+sentence they could have said to take it. Mention the score at most once, plainly, \
+and never describe a dimension as being "at the bottom".
 """
 
 RESPONSE_SCHEMA: dict[str, Any] = {
@@ -358,9 +360,11 @@ def build_prompt(
     metrics: CandidateMetrics,
     topic: str,
     own_lines: list[str] | None = None,
+    openings: list[str] | None = None,
 ) -> str:
     """Dimension verdicts plus measured behaviour. Deliberately no numbers for
-    the overall score — that is what the tool is for."""
+    the overall score — that is what the tool is for. `openings`: for a quiet
+    candidate, the questions others put to the group (rule 14)."""
     blocks = []
     for output in sorted(outputs, key=lambda o: o.dimension):
         evidence = "\n".join(f"      {e.timestamp} {e.summary}" for e in output.evidence)
@@ -394,13 +398,85 @@ MEASURED BEHAVIOUR (computed in code from speech events — facts, not estimates
 
 YOUR OWN LINES (what this candidate actually said, with timestamps)
 {chr(10).join(own_lines) if own_lines else "  (no transcript lines available)"}
-
+{_openings_block(openings)}
 Call compute_final_score to get the actual score. Use score_if if you want to \
 quantify your advice. Then write the candidate's feedback."""
 
 
 MAX_OWN_LINES = 12
 MAX_LINE_CHARS = 280
+#: How many openings a quiet candidate's prompt lists (rule 14).
+MAX_OPENINGS = 4
+#: A candidate below this share of the floor (or with no turns) is quiet.
+QUIET_SHARE = 0.10
+
+
+def silent_synthesis(openings: list[str]) -> Synthesis:
+    """The narrative for a candidate who said nothing (M14 EC-14.1): encouraging,
+    and built on the openings they had — never on what they "failed" to show."""
+    first = openings[0].strip() if openings else ""
+    moment = (
+        f" The first came at {first.split(' ', 1)[0]}: \"{first.split(' ', 1)[1]}\""
+        if " " in first
+        else ""
+    )
+    return Synthesis(
+        summary=(
+            "You stayed quiet in this one, and that is where nearly everyone starts — "
+            "getting in is a skill, and it is the quickest one to build. There were "
+            f"natural moments to come in.{moment} Next time, aim to say one sentence in the "
+            "first two minutes; everything else in a group discussion grows from there."
+        ),
+        pattern="Not yet in the discussion: no turns were recorded, so there is nothing to "
+        "score yet — only openings to take.",
+        priority_improvement=(
+            "Come in early with one short sentence. When someone asks the group a question, "
+            'answer it first, even briefly: "I\'d say yes, mainly because…" gets you in, and '
+            "the rest is easier once you have spoken."
+        ),
+        caveat="",
+        focus_areas=[
+            {
+                "area": "Getting in",
+                "what_happened": "The discussion moved on without you while openings came up."
+                if openings
+                else "The discussion moved on without you.",
+                "why_it_matters": "A group discussion only sees what you say; one early "
+                "sentence makes every later contribution easier.",
+                "what_to_do": "Pick the first question put to the group and answer it in one "
+                "sentence, before you feel fully ready.",
+                "try_saying": "I'd say yes, mainly because…",
+                "practice": "Start a short practice and use the moderator's opening invitation "
+                "to say a single sentence.",
+            }
+        ],
+        model="deterministic",
+    )
+
+
+def _openings_block(openings: list[str] | None) -> str:
+    if not openings:
+        return ""
+    return (
+        "\nOPENINGS (questions others put to the group — natural moments this candidate "
+        "could have come in)\n" + "\n".join(openings) + "\n"
+    )
+
+
+def openings_for(candidate_label: str, metrics: CandidateMetrics, segments: list[Any]) -> list[str]:
+    """For a quiet candidate only: the questions others asked, with timestamps."""
+    if metrics.turns > 0 and metrics.participation_ratio > QUIET_SHARE:
+        return []
+    found: list[str] = []
+    for segment in segments:
+        text = (getattr(segment, "text", "") or "").strip()
+        if getattr(segment, "candidate_id", None) == candidate_label or "?" not in text:
+            continue
+        start = float(getattr(segment, "start", 0.0))
+        found.append(f"  {int(start) // 60}:{int(start) % 60:02d} {text[:MAX_LINE_CHARS]}")
+        if len(found) >= MAX_OPENINGS:
+            break
+    return found
 
 
 def own_lines_for(candidate_label: str, segments: list[Any]) -> list[str]:
@@ -442,6 +518,12 @@ async def synthesise(
     """
     if not outputs:
         return Synthesis.unavailable("no dimension scores to synthesise")
+    if metrics.turns == 0:
+        # EC-14.1: told rule 14 in so many words, the model still opened with
+        # "you contributed nothing, the score is very low" (2026-10-19). With no
+        # lines of theirs to read there is nothing for it to analyse, so a silent
+        # candidate's narrative is written here: kind, and about getting in.
+        return silent_synthesis(openings_for(candidate_label, metrics, segments or []))
 
     provider = get_llm_provider()
     tools = build_tools(candidate_label, outputs, weights)
@@ -455,6 +537,7 @@ async def synthesise(
                 metrics,
                 topic,
                 own_lines_for(candidate_label, segments or []),
+                openings_for(candidate_label, metrics, segments or []),
             ),
             tools=tools,
             schema=RESPONSE_SCHEMA,

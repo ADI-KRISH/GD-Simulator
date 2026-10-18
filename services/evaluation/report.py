@@ -121,23 +121,31 @@ def entry_moments(
             "timestamp": _clock(segment.start),
             "speaker": speaker_names.get(segment.candidate_id, segment.candidate_id),
             "line": segment.text,
+            # The invitation itself: the sentence that names them.
+            "quote": next(
+                (s for s in re.split(r"(?<=[.!?])\s+", segment.text) if named.search(s)),
+                segment.text,
+            ),
         }
         for segment in segments
         if segment.candidate_id != candidate_label and named.search(segment.text or "")
     ]
 
 
-def _quoted(line: str, words: int = 16) -> str:
+def _quoted(line: str, words: int = 20) -> str:
     parts = line.split()
     return " ".join(parts[:words]) + ("…" if len(parts) > words else "")
 
 
 def _moment_lines(moments: list[dict], limit: int) -> list[str]:
-    return [
-        f'At {m["timestamp"]}, {m["speaker"]} turned to you: "{_quoted(m["line"])}" — a '
-        'ready-made moment to come in. Even "I\'d add one thing…" would have done it.'
-        for m in moments[:limit]
-    ]
+    lines = []
+    for m in moments[:limit]:
+        quote = _quoted(m.get("quote") or m["line"])
+        lines.append(
+            f'At {m["timestamp"]}, {m["speaker"]} turned to you: "{quote}" — a ready-made '
+            'moment to come in. Even "I\'d add one thing…" would have done it.'
+        )
+    return lines
 
 
 def _metric_observations(

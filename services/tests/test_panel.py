@@ -478,3 +478,37 @@ async def test_starting_with_no_preparation_tells_the_room_the_discussion_is_on(
 
 async def _noop(*_args):
     return None
+
+
+async def test_a_hand_raised_mid_line_is_invited_when_the_line_ends(
+    client, candidate_auth, session_factory
+):
+    """Seen live: a hand raised while a persona spoke was never invited."""
+    room, _ = await _room(client, candidate_auth, session_factory)
+    calls: list[tuple[str, str | None]] = []
+
+    async def fake_generate(persona, when, cue=None, target="", repeated=""):
+        calls.append((persona["label"], cue))
+        if len(calls) == 1:
+            await room.on_raise_hand()  # the hand goes up while this line is made
+        return Line(
+            speak=True, text=f"A distinct thought number {len(calls)} here.", is_conclusion=False
+        )
+
+    room._generate = fake_generate
+    await room._burst()
+    assert calls[1] == (room.moderator, "hand")
+    await room.close()
+
+
+async def test_speaking_after_raising_a_hand_cancels_the_invitation(
+    client, candidate_auth, session_factory
+):
+    """Seen live: the student typed before the invitation came; it must not follow."""
+    room, _ = await _room(client, candidate_auth, session_factory)
+    calls = _script(room)
+    room.forced = (room.moderator, "hand", "")  # a hand raised, not yet invited
+    await room.on_text("Actually, the cost should be shared by colleges and companies.")
+    await asyncio.wait_for(room.burst, timeout=10)
+    assert (room.moderator, "hand") not in calls
+    await room.close()
