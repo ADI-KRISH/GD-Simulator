@@ -13,7 +13,7 @@ The personas are built so the right answer is known in advance:
 
 The run then checks that the scores agree with how each persona behaved.
 
-Requires the backend running on localhost:8000 (APP_ENV=local) and an OpenAI
+Requires the backend running on localhost:8114 (APP_ENV=local) and an OpenAI
 key in .env. Run from the repo root:
 
     ./.venv/Scripts/python.exe -m scripts.simulate_gd --turns 18
@@ -29,7 +29,7 @@ from openai import OpenAI
 
 from services.common.config import settings
 
-API = "http://127.0.0.1:8000/api/v1"
+API = "http://127.0.0.1:8114/api/v1"
 PASSWORD = "simulated-candidate-pw"
 
 PERSONAS = {
@@ -152,9 +152,9 @@ def main() -> int:
 
     with httpx.Client(timeout=60) as client:
         try:
-            client.get("http://127.0.0.1:8000/health")
+            client.get("http://127.0.0.1:8114/health")
         except httpx.ConnectError:
-            print("backend is not running on 127.0.0.1:8000 — start it first (see README §2)")
+            print("backend is not running on 127.0.0.1:8114 — start it first (see README §2)")
             return 2
         host = account(client, "host", "host")
         candidates = {label: account(client, PERSONAS[label][0], "candidate") for label in PERSONAS}
@@ -272,7 +272,7 @@ def main() -> int:
     print()
     for label, ok in checks:
         print(f"  {'PASS' if ok else 'FAIL'}  {label}")
-    print(f"\nreports: http://localhost:3000/report/{sid}")
+    print(f"\nreports: http://localhost:5214/report/{sid}")
     return 0 if all(ok for _, ok in checks) else 1
 
 

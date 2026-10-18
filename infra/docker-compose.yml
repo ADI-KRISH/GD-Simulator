@@ -3,7 +3,8 @@
 #
 # Host ports are offset off the defaults (5442, 6389, 9010/9011) because this
 # machine already runs a native PostgreSQL on 5432 and other projects' Redis and
-# MinIO on 6379 / 9000-9001. Container-side ports stay standard.
+# MinIO on 6379 / 9000-9001. Container-side ports stay standard. Every host port
+# here is recorded in PORTS.txt (M14's own containers) - take new ones from there.
 name: gd-platform
 
 services:
@@ -82,7 +83,7 @@ services:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
     extra_hosts:
-      # lets Prometheus scrape the backend running on the host at :8000
+      # lets Prometheus scrape the backend running on the host at :8114
       - "host.docker.internal:host-gateway"
 
   grafana:
@@ -95,7 +96,8 @@ services:
       GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
     ports:
-      - "127.0.0.1:3001:3000"   # 3000 on the host belongs to Next.js
+      # PORTS.txt: internal ops apps are 8300 + module number. Not 3001: Langfuse's.
+      - "127.0.0.1:8314:3000"
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - grafana_data:/var/lib/grafana

@@ -23,8 +23,10 @@ class Settings(BaseSettings):
     app_env: str = "local"
     log_level: str = "INFO"
     api_host: str = "127.0.0.1"
-    api_port: int = 8000
-    frontend_origin: str = "http://localhost:3000"
+    # PORTS.txt: M14 is API 8114, web 5214, on its own and on the platform alike.
+    # 8000 is the platform gateway's, and 3000 is on PORTS.txt's do-not-use list.
+    api_port: int = 8114
+    frontend_origin: str = "http://localhost:5214"
 
     # bcrypt work factor. 12 is the production-grade default; the test suite
     # drops it so a run that registers dozens of users stays fast.

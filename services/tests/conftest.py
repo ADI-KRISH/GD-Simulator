@@ -121,7 +121,7 @@ async def client(session_factory, events: EventRecorder) -> AsyncIterator[AsyncC
     # The WebSocket handler and the timer ticker open their own sessions.
     app.dependency_overrides[get_session_factory] = lambda: session_factory
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://localhost:8000") as http_client:
+    async with AsyncClient(transport=transport, base_url="http://localhost:8114") as http_client:
         yield http_client
     app.dependency_overrides.clear()
 

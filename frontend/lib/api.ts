@@ -24,7 +24,8 @@ import type {
   PersonaPreset,
 } from "./types";
 
-export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+// PORTS.txt: M14's API is 8114 (8000 is the platform gateway's).
+export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8114";
 
 const ACCESS_KEY = "gd.access_token";
 const REFRESH_KEY = "gd.refresh_token";

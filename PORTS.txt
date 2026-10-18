@@ -1,0 +1,149 @@
+===============================================================================
+  AI INTERVIEWER — PORT ALLOCATION
+  Single source of truth. If you need a port, take it from here and tick it off.
+  Last updated: 2026-10-19
+===============================================================================
+
+READ THIS FIRST
+-------------------------------------------------------------------------------
+In normal development there are only TWO ports you touch:
+
+    8000    backend    the gateway - all 19 module routers mounted
+    5173    frontend   the shell   - every built module UI mounted
+
+The gateway (Backend/gateway) mounts all 19 module routers into one API, and
+the shell (Frontend/shell) mounts all built module UIs into one web app. A
+student never hops between ports.
+
+But every module ALSO runs standalone on its own reserved port, for focused
+development and debugging:
+
+    cd GD_Arena  && .venv\Scripts\python -m uvicorn services.main:app --port 8114
+    cd frontend  && npm start                                          (:5214)
+
+    or simply:   start_gd.bat             this module, API and web, no Docker
+                 start.bat                with its own containers (see below)
+
+  GD Arena is a Next.js app with its own backend, so the shell frames it at
+  /gd rather than mounting it from source.
+
+Both put every service in ONE Windows Terminal window, one tab each, with the
+control tab last. Ports live in scripts\services.txt - which reads them from
+here, so this file stays the single source of truth.
+
+Same routers, same components either way - the standalone entrypoint only adds
+the providers the gateway/shell would otherwise own. What you fix in isolation
+is what students get.
+
+Never hardcode a port in application code. Read it from env:
+    backend    BACKEND_PORT     (default 8000)
+    frontend   VITE_API_BASE    (default http://127.0.0.1:8000)
+
+
+PRIMARY (use these)
+-------------------------------------------------------------------------------
+  PORT   SERVICE                       COMMAND
+  ----   ---------------------------   ------------------------------------------
+  8000   Backend API (all modules)     uvicorn gateway.main:app --reload --port 8000
+  8000   API docs (Swagger)            http://127.0.0.1:8000/docs
+  8000   OpenAPI schema                http://127.0.0.1:8000/openapi.json
+  5173   Frontend shell (all modules)  npm run dev            (from Frontend/)
+  4173   Frontend preview (built)      npm run preview
+
+
+INFRASTRUCTURE
+-------------------------------------------------------------------------------
+  PORT   SERVICE                       NOTES
+  ----   ---------------------------   ------------------------------------------
+  5432   PostgreSQL + pgvector         the spine (master plan §20)
+  6379   Redis                         cache + job queue
+  5050   pgAdmin                       optional, docker-compose only
+  3001   Langfuse                      LLM tracing (NOT 3000, see conflicts)
+  9000   MinIO / object storage        optional, for recordings & artefacts
+
+
+PER-MODULE RESERVED PORTS
+-------------------------------------------------------------------------------
+Backend standalone : 81xx      Frontend standalone : 52xx
+Formula            : backend 8100 + module number, frontend 5200 + module number
+
+  MOD   MODULE                              BACKEND   FRONTEND   PHASE  OWNER
+  ---   ---------------------------------   -------   --------   -----  -----
+  M01   Resume Ingestion & Claim Extract     8101      5201        1      E3
+  M02   JD Parser & Coverage Planner         8102      5202        1      E3
+  M03   GitHub Analyzer & Forensics          8103      5203        1      E3
+  M04   Skill Graph & MNEMOS Memory          8104      5204        1      E3
+  M05   Question Intelligence (IRT/CAT)      8105      5205        1-2    E3
+  M06   Mock Interview Engine                8106      5206        1-2    E2
+  M07   Live Coding & Auto-Judge             8107      5207        1      E2
+  M08   System Design Canvas                 8108      5208        2      E2
+  M09   ML / Research Viva                   8109      5209        2      E1
+  M10   Aptitude & OA Engine                 8110      5210        2      E3
+  M11   Voice & Conversation Engine          8111      5211        3      E2
+  M12   Multimodal Analysis Suite            8112      5212        3      E1+E3
+  M13   Evaluation Engine                    8113      5213        1      E1
+  M14   Group Discussion Arena               8114      5214        3      E2
+  M15   Company Guider                       8115      5215        3      E3
+  M16   Counselor & Study Plan               8116      5216        4      E3
+  M17   Communication Coach                  8117      5217        3      E1
+  M18   Integrity & Proctoring               8118      5218        3      E2
+  M19   Reports & Dashboards                 8119      5219        2-4    E3
+
+INTERNAL / OPS APPS - 83xx
+-------------------------------------------------------------------------------
+Streamlit and other INTERNAL surfaces, never student-facing, never on a
+request path. Same formula: 8300 + module number.
+
+  M04   Skill Graph ops app   8304   ontology browser, simulation dashboard,
+                                     retrieval workbench (M04 spec 6.10)
+  M14   GD Arena Grafana      8314   dashboards over GD's Prometheus (Docker)
+
+Modules needing a long-lived socket (voice, GD, live coding) will also need a
+WebSocket port. Reserve those at 82xx using the same formula when the time
+comes — do not improvise:
+
+  M07   Live Coding    ws  8207
+  M11   Voice Engine   ws  8211
+  M14   GD Arena       ws  8214   reserved: GD's sockets ride on 8114 today,
+                                  beside its API (/ws/...)
+
+
+A MODULE'S OWN CONTAINERS
+-------------------------------------------------------------------------------
+A module that brings its own infrastructure (docker compose) binds it to
+127.0.0.1 on host ports recorded here - never the spine's 5432 / 6379 / 9000,
+and never another module's. Take a new one here, then tick it off.
+
+  M14   GD Arena - GD_Arena/infra/docker-compose.yml (start.bat; human rooms)
+          5442   PostgreSQL           GD's own database (the spine is 5432)
+          6389   Redis                cache + its Streams event bus
+          7880   LiveKit              signalling, WebSocket + HTTP (the SFU)
+          7881   LiveKit RTC/TCP
+          7882   LiveKit RTC/UDP      one UDP port, not a range
+          9010   MinIO S3 API         recordings
+          9011   MinIO console
+          9090   Prometheus           scrapes GD's API on 8114
+          8314   Grafana              an ops app - see 83xx
+        GD's no-Docker mode (start_gd.bat, the platform's) needs none of these.
+
+
+DO NOT USE — known conflicts on Windows dev machines
+-------------------------------------------------------------------------------
+  3000   claimed by too many JS tools; Langfuse moved to 3001 for this reason
+  5000   Windows "System" / SSDP on some builds; also macOS AirPlay
+  7000   macOS AirPlay Receiver
+  8080   default for a dozen Java/Tomcat/proxy tools
+  27017  MongoDB — we do not use Mongo; if this is listening, something else is
+
+
+CHECKING A PORT
+-------------------------------------------------------------------------------
+  PowerShell    Get-NetTCPConnection -LocalPort 8000 -State Listen
+  cmd           netstat -ano | findstr :8000
+  kill by pid   taskkill /PID <pid> /T /F
+
+The launchers shut services down by PID, recorded per service in .run\<id>.pid.
+If a port is stuck after a crash, find the PID with the commands above rather
+than killing by window title — on Windows 11 the window title belongs to the
+terminal host, not to your service, so a title-matched taskkill can close the
+whole terminal including the control tab.

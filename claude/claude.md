@@ -95,19 +95,20 @@ URL, a cloud account, or a managed service.
 - Secrets live in a local `.env` (gitignored) with dev-only values — never real
   cloud credentials.
 
-Local port map (fixed — use these everywhere, don't invent new ones):
+Local port map (fixed — use these everywhere, don't invent new ones). They are
+M14's in the platform's `PORTS.txt`; take any new port from there:
 
 | Service | Local address |
 |---|---|
-| Frontend (Next.js dev) | http://localhost:3000 |
-| Backend API (FastAPI) | http://localhost:8000 (OpenAPI at `/docs`) |
-| WebSocket control plane | ws://localhost:8000/ws |
+| Frontend (Next.js) | http://localhost:5214 |
+| Backend API (FastAPI) | http://localhost:8114 (OpenAPI at `/docs`) |
+| WebSocket control plane | ws://localhost:8114/ws |
 | LiveKit (self-hosted, Docker) | ws://localhost:7880 (RTC 7881/tcp, 7882/udp) |
 | PostgreSQL | localhost:5442 |
 | Redis (cache + Streams) | localhost:6389 |
 | MinIO API / console | http://localhost:9010 / http://localhost:9011 |
 | Prometheus | http://localhost:9090 |
-| Grafana | http://localhost:3001 |
+| Grafana | http://localhost:8314 |
 
 Postgres, Redis and MinIO sit one block off their default ports (5432 / 6379 /
 9000-9001) because this machine already runs a native PostgreSQL service and

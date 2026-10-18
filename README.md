@@ -52,7 +52,7 @@ Three things are deliberately **not** done by a language model:
 **One step:** double-click `start.bat` (or run `.\start.ps1`). It starts Docker
 Desktop if needed, brings up the containers, runs migrations, rebuilds the
 frontend only if its source changed, opens the backend and frontend in their own
-windows, waits until both answer, and opens http://localhost:3000. Safe to re-run.
+windows, waits until both answer, and opens http://localhost:5214. Safe to re-run.
 
 The manual steps below are what it automates.
 
@@ -69,15 +69,20 @@ runs other projects' Postgres, Redis and MinIO.
 
 | Service | Address |
 |---|---|
-| Frontend (Next.js) | http://localhost:3000 |
-| Backend API | http://localhost:8000 — OpenAPI at `/docs` |
-| WebSocket control plane | ws://localhost:8000/ws/sessions/{id} |
-| LiveKit | ws://localhost:7880 |
+| Frontend (Next.js) | http://localhost:5214 |
+| Backend API | http://localhost:8114 — OpenAPI at `/docs` |
+| WebSocket control plane | ws://localhost:8114/ws/sessions/{id} |
+| LiveKit | ws://localhost:7880 (RTC 7881/tcp, 7882/udp) |
 | PostgreSQL | localhost:5442 |
 | Redis | localhost:6389 |
 | MinIO API / console | http://localhost:9010 / http://localhost:9011 |
 | Prometheus | http://localhost:9090 |
-| Grafana | http://localhost:3001 |
+| Grafana | http://localhost:8314 |
+
+Every port is GD's own in the platform's `PORTS.txt` (M14: API 8114, web 5214;
+internal ops apps are 8300 + module number), so GD runs beside every other
+module without a clash, on its own and inside the platform alike. 8000 is the
+platform gateway's and 3000 is on PORTS.txt's do-not-use list.
 
 ### 2. Backend
 
@@ -86,10 +91,10 @@ cp .env.example .env                 # first run only
 python -m venv .venv
 ./.venv/Scripts/python.exe -m pip install -r services/requirements-dev.txt
 ./.venv/Scripts/alembic.exe upgrade head
-./.venv/Scripts/python.exe -m uvicorn services.main:app --host 127.0.0.1 --port 8000
+./.venv/Scripts/python.exe -m uvicorn services.main:app --host 127.0.0.1 --port 8114
 ```
 
-Check it: `curl http://localhost:8000/health` →
+Check it: `curl http://localhost:8114/health` →
 `{"status":"ok","checks":{"database":true,"redis":true}}`.
 
 Three background loops start with the app: the session timer ticker, the
@@ -129,7 +134,7 @@ the local filesystem, and agents publish no media so LiveKit is unused.
 $env:DATABASE_URL = "sqlite+aiosqlite:///./gd_local.db"
 $env:REDIS_URL = "disabled"
 .\.venv\Scripts\alembic.exe upgrade head
-.\.venv\Scripts\python.exe -m uvicorn services.main:app --host 127.0.0.1 --port 8000
+.\.venv\Scripts\python.exe -m uvicorn services.main:app --host 127.0.0.1 --port 8114
 
 # Frontend (second window)
 cd frontend; npm run build; npm start

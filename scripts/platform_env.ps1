@@ -2,7 +2,8 @@
     GD as part of the AI Interviewer platform: its ports and its settings.
     Dot-sourced by start_platform.ps1 and pane.ps1, so both agree.
 
-    Ports are PORTS.txt's: 8100 + 14 for the API, 5200 + 14 for the web app.
+    Ports are PORTS.txt's: 8100 + 14 for the API, 5200 + 14 for the web app -
+    the same as standalone GD's (start.bat), so run one or the other.
     No Docker: SQLite, Redis off, files on disk - the same no-Docker mode GD
     runs in standalone, with the platform bridge on (sign-in with the
     platform's session, results to the skill graph).
@@ -14,9 +15,6 @@ $GdApiPort = 8114
 $GdWebPort = 5214
 $GdApiUrl = "http://localhost:$GdApiPort"
 $GdWebUrl = "http://localhost:$GdWebPort"
-# Its own build folder: the standalone build (start.ps1) bakes in a different
-# API address, and Next.js inlines NEXT_PUBLIC_* at build time.
-$GdDistDir = '.next-platform'
 
 function Set-GdPlatformEnv {
     $env:APP_ENV = 'local'
@@ -37,7 +35,6 @@ function Set-GdPlatformEnv {
     $env:M04_URL = 'http://127.0.0.1:8104'
     $env:FRONTEND_ORIGIN = $GdWebUrl
     $env:NEXT_PUBLIC_API_URL = $GdApiUrl
-    $env:NEXT_DIST_DIR = $GdDistDir
 }
 
 function Select-FirstKey {

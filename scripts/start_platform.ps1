@@ -6,9 +6,10 @@
     start.bat finds it beside the other modules and its `stop` closes it.
     Returns once both are listening; a service already listening is left alone.
 
-    Safe to re-run. The web app is rebuilt only when its source changed since
-    the last platform build. Standalone GD (start.bat, Docker, 8000/3000) is
-    untouched: different ports, database and build folder.
+    Safe to re-run. The web app is rebuilt only when its source, or the API
+    address baked into it, changed since the last build. Standalone GD
+    (start.bat, Docker) takes the same ports - PORTS.txt gives a module one
+    set - so run one or the other; their databases differ.
 
     ASCII only and CRLF.
 #>
@@ -46,7 +47,7 @@ Pop-Location
 if (-not $migrated) { Fail 'database migrations failed: run  .venv\Scripts\alembic.exe upgrade head  to see why.' }
 
 # -- the web app: built for 8114, only when its source changed -----------------
-$dist = Join-Path $frontend $GdDistDir
+$dist = Join-Path $frontend '.next'
 $stamp = Join-Path $dist 'api_url.txt'
 $sources = @(Get-ChildItem (Join-Path $frontend 'app'), (Join-Path $frontend 'lib') -Recurse -File)
 $sources += @(Get-ChildItem (Join-Path $frontend 'package.json'), (Join-Path $frontend 'next.config.mjs') -ErrorAction SilentlyContinue)

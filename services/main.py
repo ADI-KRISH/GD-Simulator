@@ -1,7 +1,7 @@
 """Local composition root.
 
 Every service package is mounted into one FastAPI process listening on
-http://localhost:8000. There is no gateway and no deploy target — see
+http://localhost:8114. There is no gateway and no deploy target — see
 "Deployment — LOCAL ONLY" in claude.md.
 """
 

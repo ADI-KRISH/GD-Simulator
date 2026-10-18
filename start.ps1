@@ -98,7 +98,8 @@ if (-not $migrated) { Fail "Migrations failed (see above)." }
 
 # --- 4. Stop anything left over from a previous run --------------------------
 Step "Stopping old backend/frontend (if any)"
-$backendCmd = ".\.venv\Scripts\python.exe -m uvicorn services.main:app --host 127.0.0.1 --port 8000"
+# PORTS.txt: M14 is API 8114, web 5214 - the same on its own as on the platform.
+$backendCmd = ".\.venv\Scripts\python.exe -m uvicorn services.main:app --host 127.0.0.1 --port 8114"
 $frontendCmd = "npm start"
 
 # Close windows opened by a previous run, recognised by their exact encoded
@@ -110,8 +111,8 @@ $ours = @(
 Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
     Where-Object { $cl = $_.CommandLine; $ours | Where-Object { $cl -like "*$_*" } } |
     ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-Stop-Port 8000
-Stop-Port 3000
+Stop-Port 8114
+Stop-Port 5214
 
 # --- 5. Frontend build (only when the source changed) ------------------------
 Step "Frontend build"
@@ -132,13 +133,13 @@ if (-not (Test-Path $buildId) -or $newest -gt (Get-Item $buildId).LastWriteTime)
 
 # --- 6. Backend and frontend, each in its own window -------------------------
 Step "Starting backend and frontend"
-if (-not (Start-Server "GD backend" $root $backendCmd 8000 "http://127.0.0.1:8000/health")) {
+if (-not (Start-Server "GD backend" $root $backendCmd 8114 "http://127.0.0.1:8114/health")) {
     Fail "Backend did not start. Look at the 'GD backend' window for the error."
 }
-if (-not (Start-Server "GD frontend" $frontend $frontendCmd 3000 "http://localhost:3000/")) {
+if (-not (Start-Server "GD frontend" $frontend $frontendCmd 5214 "http://localhost:5214/")) {
     Fail "Frontend did not start. Look at the 'GD frontend' window for the error."
 }
 
-Write-Host "`nGD Platform is running at http://localhost:3000" -ForegroundColor Green
+Write-Host "`nGD Platform is running at http://localhost:5214" -ForegroundColor Green
 Write-Host "Keep the 'GD backend' and 'GD frontend' windows open while you use it."
-if (-not $NoBrowser) { Start-Process "http://localhost:3000" }
+if (-not $NoBrowser) { Start-Process "http://localhost:5214" }

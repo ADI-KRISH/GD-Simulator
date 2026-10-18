@@ -11,7 +11,7 @@ scrape_configs:
     metrics_path: /metrics
     static_configs:
       # the FastAPI dev server running on the host
-      - targets: ["host.docker.internal:8000"]
+      - targets: ["host.docker.internal:8114"]
 
   - job_name: livekit
     static_configs:

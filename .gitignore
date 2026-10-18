@@ -11,8 +11,7 @@ venv/
 # Node / Next.js
 node_modules/
 .next/
-# the platform's build (scripts/start_platform.ps1)
-.next-platform/
+# the platform launcher's build log (scripts/start_platform.ps1)
 gd_platform_build.log
 out/
 .turbo/
