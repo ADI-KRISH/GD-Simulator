@@ -91,18 +91,24 @@ export default function ReportPage() {
     void load();
   }, [load]);
 
-  // Evaluation is asynchronous by design, so the page polls until it lands.
-  useEffect(() => {
-    if (!status || !PENDING_STATES.has(status.state)) return;
-    const timer = setInterval(() => void load(), 3000);
-    return () => clearInterval(timer);
-  }, [status, load]);
-
-  if (!session) return error ? <p className="empty">{error}</p> : <Skeleton rows={3} tall />;
-
   const pending = status != null && PENDING_STATES.has(status.state);
   // Before the first report lands the evaluation is either running or about to.
-  const waiting = !report && (pending || (!status && ["ENDED", "EVALUATING"].includes(session.state)));
+  const waiting =
+    session != null &&
+    !report &&
+    (pending || (!status && ["ENDED", "EVALUATING"].includes(session.state)));
+
+  // Evaluation is asynchronous by design, so the page polls until it lands —
+  // including before the job exists: opened straight from "Finish", the first
+  // status call can 404, and polling only on a pending status left the page
+  // saying "updates by itself" while it never asked again (19 Oct, Day 4 walk).
+  useEffect(() => {
+    if (!pending && !waiting) return;
+    const timer = setInterval(() => void load(), 3000);
+    return () => clearInterval(timer);
+  }, [pending, waiting, load]);
+
+  if (!session) return error ? <p className="empty">{error}</p> : <Skeleton rows={3} tall />;
 
   return (
     <div className="stack" style={{ gap: "1.25rem" }}>

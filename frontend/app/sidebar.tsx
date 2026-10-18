@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 
 import { notifications } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
+import { isEmbedded } from "@/lib/embedded";
 import { Icon, type IconName } from "./icons";
 
 // Polling, not a socket: the control-plane socket is scoped to one session, and
@@ -34,6 +35,9 @@ export function Sidebar() {
   const router = useRouter();
   const pathname = usePathname();
   const [unread, setUnread] = useState(0);
+  // Read after mount: the server cannot know, and both renders must agree.
+  const [embedded, setEmbedded] = useState(false);
+  useEffect(() => setEmbedded(isEmbedded()), [pathname]);
 
   useEffect(() => {
     if (!user) {
@@ -70,6 +74,28 @@ export function Sidebar() {
       <span>GD Platform</span>
     </Link>
   );
+
+  // Inside the platform: its tabs only. The shell owns the brand, the account
+  // and signing out, and the student came in signed in.
+  if (embedded) {
+    return (
+      <header className="guestbar guestbar--embedded">
+        <nav className="guestbar-nav" aria-label="Group discussion">
+          {user &&
+            MAIN_NAV.map((n) => (
+              <Link
+                key={n.href}
+                href={n.href}
+                className={`nav-link ${n.match(pathname) ? "nav-link--active" : ""}`}
+                aria-current={n.match(pathname) ? "page" : undefined}
+              >
+                {n.label}
+              </Link>
+            ))}
+        </nav>
+      </header>
+    );
+  }
 
   if (loading) return <header className="guestbar">{brand}</header>;
 

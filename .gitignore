@@ -11,6 +11,9 @@ venv/
 # Node / Next.js
 node_modules/
 .next/
+# the platform's build (scripts/start_platform.ps1)
+.next-platform/
+gd_platform_build.log
 out/
 .turbo/
 npm-debug.log*
@@ -36,6 +39,8 @@ Thumbs.db
 
 # Local SQLite database (no-Docker mode)
 *.db
+*.db-wal
+*.db-shm
 
 # Backend runtime logs
 backend.*.log

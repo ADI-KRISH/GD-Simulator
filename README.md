@@ -135,9 +135,28 @@ $env:REDIS_URL = "disabled"
 cd frontend; npm run build; npm start
 ```
 
-`/health` reports `degraded` (Redis is off) — that is expected. What does not
-work without Docker: real audio/video between people (LiveKit). Transcription
-and evaluation still work.
+`/health` reports `ok` with `"redis": null` — switched off by configuration is
+not a fault. What does not work without Docker: real audio/video between people
+(LiveKit). Transcription and evaluation still work.
+
+### As part of the AI Interviewer platform
+
+`start_gd.bat` runs GD the platform's way: API on **8114**, web app on **5214**
+(PORTS.txt), no Docker, each in a tab of the platform's terminal window. The
+platform's own `start.bat` (Platform_Shell) calls it, and its `stop` closes it.
+
+- **Sign-in is the platform's.** The shell's `/gd` page frames GD's `/platform`
+  page, which trades the platform's identity (Platform_Core `ai_core.identity`)
+  for GD's own tokens — `POST /api/v1/auth/platform`, on only with
+  `PLATFORM_BRIDGE=1`. Inside the frame GD drops its own brand and sign-out.
+- **Results reach the skill graph.** After each report, a platform student's
+  scores go to M04 as `gd_contribution` observations, quoting their own lines,
+  if they have practice consent there. Four dimensions map to M04's
+  communication concepts (`services/ai_platform/skill_graph.py`); content and
+  leadership have no honest match and stay in GD's report. M04 records the
+  evidence without moving its ability estimate (its rule EC-4.17).
+- **Model key:** the first `GROQ_API_KEYS` entry in `keys.txt` beside the repos
+  — one Groq organization per running app. Read into the API's process only.
 
 ## Optional: real STT and real evaluation
 

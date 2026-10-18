@@ -211,6 +211,12 @@ h1 {
   gap: 0.8rem;
 }
 
+/* Inside the platform's shell: its tabs, left-aligned, and nothing else. */
+.guestbar--embedded {
+  justify-content: flex-start;
+  padding-block: 0.5rem;
+}
+
 @media (max-width: 860px) {
   .app {
     grid-template-columns: minmax(0, 1fr);

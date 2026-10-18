@@ -86,6 +86,25 @@ export const tokenStore = {
   },
 };
 
+/**
+ * Sign in as the student the AI Interviewer platform says this is (M14 Day 4).
+ * The headers are the platform's development identity, which GD's backend
+ * honours only with PLATFORM_BRIDGE=1. The name is URI-encoded: a header is
+ * Latin-1, and a student's name need not be.
+ */
+export async function platformSignIn(candidate: string, name: string): Promise<TokenPair> {
+  const response = await fetch(`${API_URL}/api/v1/auth/platform`, {
+    method: "POST",
+    headers: {
+      "X-Candidate-Id": candidate,
+      "X-Role": "student",
+      "X-Display-Name": encodeURIComponent(name),
+    },
+  });
+  if (!response.ok) throw await toError(response);
+  return (await response.json()) as TokenPair;
+}
+
 async function toError(response: Response): Promise<ApiError> {
   let code = "error";
   let message = response.statusText;
