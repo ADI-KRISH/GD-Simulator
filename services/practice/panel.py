@@ -221,6 +221,13 @@ def cue_text(
             "YOUR TASK NOW: as the moderator, close the discussion: what the group agrees on, "
             "where it still differs, and one closing recommendation. Set is_conclusion to true."
         )
+    if cue == "time":
+        # `target` carries the time left, e.g. "about 3 minutes".
+        return (
+            f"YOUR TASK NOW: give a quick time check as the moderator. Say there are {target} "
+            "left, and in one sentence steer the group on how to use them. Do not argue a "
+            "point of your own."
+        )
     if cue == "fresh":
         return (
             f'Your previous draft repeated a point already made: "{repeated}". Say something '

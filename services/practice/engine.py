@@ -213,6 +213,7 @@ class PracticeRoom:
         self.last_end = 0.0  # when the latest recorded turn ended
         self.hands = 0  # raised hands (EC-14.10: a distinct entry style)
         self._tasks: set[asyncio.Task] = set()  # typed turns in flight
+        self.time_checks: set[str] = set()  # moderator time checks already given
 
     # ------------------------------------------------------------------ setup
 
@@ -587,7 +588,7 @@ class PracticeRoom:
                 if label is None or self.user_active:
                     return
                 cut = await self._persona_turn(label, cue, target)
-                if cue in ("open", "hand") or cut or self.user_active or self.concluded:
+                if cue in ("open", "hand", "time") or cut or self.user_active or self.concluded:
                     return  # after an invitation the floor is the student's
                 if self.forced:
                     continue  # a turn is owed (the persona a redirect named): take it now
@@ -639,6 +640,13 @@ class PracticeRoom:
                 if self.opened and self.forced:
                     self._start_burst()  # a turn is owed (a raised hand): take it now
                     continue
+                # The moderator keeps the room on the clock: halfway, and when to converge.
+                check = clock.time_check_due(when, self.time_checks) if self.moderator else None
+                if self.opened and check and not self.concluded:
+                    self.time_checks.add(check)
+                    self.forced = (self.moderator, "time", clock.remaining_phrase(when))
+                    self._start_burst()
+                    continue
                 # First, the moderator opens the discussion after a short delay...
                 if not self.opened and quiet >= OPENING_DELAY_SECONDS:
                     self.opened = True
@@ -683,7 +691,7 @@ class PracticeRoom:
             named=self.student_named,
             others=others,
             topic=topic,
-            max_words=clock.MAX_WORDS.get(when.phase, 45),
+            max_words=clock.word_budget(when),
             clock_guidance=clock.guidance(when, self.concluded),
             is_moderator=persona["label"] == self.moderator,
             cue=cue,

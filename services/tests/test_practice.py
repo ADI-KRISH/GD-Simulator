@@ -273,3 +273,26 @@ async def test_a_new_burst_never_starts_over_a_live_line(
     room.speaking = "P1"  # a persona is mid-line
     room._start_burst()
     assert room.burst is None  # refused: one voice at a time
+
+
+def test_word_budget_shrinks_to_fit_the_time_left():
+    from services.practice import timing as clock
+
+    assert clock.word_budget(clock.timing_for(100, 600)) == 35  # plenty of time: phase cap
+    assert clock.word_budget(clock.timing_for(588, 600)) == 20  # final: its own cap, fits too
+    tight = clock.Timing(elapsed=590, remaining=10, duration=600, phase=clock.WRAP_UP)
+    assert clock.word_budget(tight) == 15  # (10 s - 4 s margin) * 2.5 words/s
+    assert clock.word_budget(clock.Timing(598, 2, 600, clock.FINAL)) == clock.MIN_WORDS_FITTED
+
+
+def test_time_checks_are_owed_once_each():
+    from services.practice import timing as clock
+
+    done: set[str] = set()
+    assert clock.time_check_due(clock.timing_for(100, 600), done) is None
+    assert clock.time_check_due(clock.timing_for(300, 600), done) == "half"
+    done.add("half")
+    assert clock.time_check_due(clock.timing_for(320, 600), done) is None
+    assert clock.time_check_due(clock.timing_for(500, 600), done) == "wrap"
+    assert clock.time_check_due(clock.timing_for(585, 600), done) is None  # final: just close
+    assert clock.remaining_phrase(clock.timing_for(420, 600)) == "about 3 minutes"

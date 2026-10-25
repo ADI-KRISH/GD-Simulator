@@ -54,6 +54,15 @@ LINE_SECONDS = 14.0
 # Short lines are faster to generate and to say, and sound like conversation.
 MAX_WORDS = {OPENING: 35, MIDDLE: 35, WRAP_UP: 50, FINAL: 20}
 
+# A line must be finished before the buzzer, so its length is capped by what fits
+# in the time left: spoken words per second, and a margin kept clear at the end.
+SPEECH_WORDS_PER_SECOND = 2.5
+END_MARGIN_SECONDS = 4.0
+MIN_WORDS_FITTED = 8
+
+# Moderator time checks: (name, due once this phase is reached or this share has passed).
+HALFWAY_SHARE = 0.5
+
 # Phrases like "to conclude" / "my final point" that mark a deliberate wrap-up.
 _CONCLUDING = re.compile(
     r"\b(to conclude|in conclusion|to sum up|to summari[sz]e|in summary|"
@@ -107,6 +116,40 @@ def timing_for(elapsed: float, duration: float) -> Timing:
     else:
         phase = MIDDLE
     return Timing(elapsed, remaining, duration, phase)
+
+
+def word_budget(timing: Timing) -> int:
+    """Most words a line may have: the phase's cap, cut down to what fits before the end.
+
+    Without this a 35-word line (about 14 s) started with 10 s left is cut off by
+    the buzzer, and the conclusion the whole panel was steering toward never lands.
+    """
+    cap = MAX_WORDS.get(timing.phase, 45)
+    fits = int((timing.remaining - END_MARGIN_SECONDS) * SPEECH_WORDS_PER_SECOND)
+    return max(MIN_WORDS_FITTED, min(cap, fits))
+
+
+def time_check_due(timing: Timing, announced: set[str]) -> str | None:
+    """Which spoken time check the moderator owes now ("half" or "wrap"), if any.
+
+    Each is owed once. Missing a window (the room was busy) is fine: the later
+    check is still owed, and an earlier one that is no longer true is dropped.
+    """
+    if timing.phase in (FINAL, OVER):
+        return None
+    if timing.phase == WRAP_UP:
+        return "wrap" if "wrap" not in announced else None
+    if timing.elapsed >= HALFWAY_SHARE * timing.duration and "half" not in announced:
+        return "half"
+    return None
+
+
+def remaining_phrase(timing: Timing) -> str:
+    """The time left, rounded the way a person would say it."""
+    seconds = int(timing.remaining)
+    if seconds >= 90:
+        return f"about {round(seconds / 60)} minutes"
+    return f"about {max(10, round(seconds / 10) * 10)} seconds"
 
 
 def looks_like_conclusion(text: str) -> bool:
