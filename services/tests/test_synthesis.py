@@ -1,5 +1,23 @@
 """The Final Synthesis agent and its scoring tools (design §20).
 
+Purpose:     Tests `evaluation/synthesis.py`: the two scoring tools
+             (`compute_final_score`, `score_if`), the prompt it builds, and what
+             happens when the model misbehaves or fails.
+Why needed:  The synthesis agent writes narrative but must never influence the
+             score. These tests defend that boundary: tools compute from stored
+             data, the prompt withholds the overall number, the schema has no
+             score field, and a model that tries to smuggle a number out can't.
+Contains:    test builders (`output`, `outputs`, `metrics`, `_Seg`) and tests for
+             tool arithmetic, no-argument tool, what-if correctness without
+             mutation, bad arguments as values, tool crashes, prompt contents,
+             schema shape, recorded tool calls, graceful failure, the score-
+             smuggling attempt, the candidate's own lines and the keep-good /
+             drop-bad item filtering.
+Used by:     pytest (run with `pytest services/tests/test_synthesis.py`).
+Depends on:  evaluation/synthesis.py and aggregator.py (under test),
+             llm/ (stub provider, base types), common/contracts.py,
+             session/models.py (`DEFAULT_WEIGHTS`).
+
 The agent is allowed a holistic view and a narrative voice. It is not allowed
 the number. These tests defend that boundary — the tools compute from stored
 data, the model supplies only the question, and no path exists by which a
@@ -29,6 +47,7 @@ LABEL = "A"
 
 
 def output(dimension: str, score: float, confidence: float = 0.85) -> EvaluationOutput:
+    """Build a valid EvaluationOutput for one dimension."""
     return EvaluationOutput(
         candidate_id=LABEL,
         dimension=dimension,
@@ -41,6 +60,7 @@ def output(dimension: str, score: float, confidence: float = 0.85) -> Evaluation
 
 
 def outputs() -> list[EvaluationOutput]:
+    """A full set of dimension outputs for the test candidate."""
     return [
         output("content", 8.0),
         output("communication", 7.0),
@@ -51,6 +71,7 @@ def outputs() -> list[EvaluationOutput]:
 
 
 def metrics() -> CandidateMetrics:
+    """Sample measured metrics for the test candidate."""
     return CandidateMetrics(
         session_id="GD1",
         candidate_id=LABEL,
@@ -70,6 +91,7 @@ def metrics() -> CandidateMetrics:
 
 async def test_compute_final_score_matches_the_deterministic_aggregator():
     """The tool must be the same arithmetic, not a second implementation."""
+    # Index the tools by name, call the real one, and compare with a direct aggregator run.
     tools = {t.name: t for t in build_tools(LABEL, outputs(), WEIGHTS)}
     result = await tools["compute_final_score"].invoke({})
     expected = aggregate_candidate(LABEL, outputs(), WEIGHTS)
@@ -81,6 +103,7 @@ async def test_compute_final_score_matches_the_deterministic_aggregator():
 
 async def test_compute_final_score_takes_no_arguments():
     """The model names a candidate at most — it can never supply a number."""
+    # The input schema is empty and closed, so the model has nowhere to put a number.
     tools = {t.name: t for t in build_tools(LABEL, outputs(), WEIGHTS)}
     schema = tools["compute_final_score"].input_schema
     assert schema["properties"] == {}
@@ -90,6 +113,7 @@ async def test_compute_final_score_takes_no_arguments():
 async def test_score_if_is_hypothetical_and_arithmetically_true():
     """The feature that makes the tool worth having over a static number."""
     tools = {t.name: t for t in build_tools(LABEL, outputs(), WEIGHTS)}
+    # Ask: "what if collaboration had been 9?" and compare with the real score.
     result = await tools["score_if"].invoke(
         {"dimension": "collaboration", "hypothetical_score": 9.0}
     )
@@ -104,6 +128,7 @@ async def test_score_if_is_hypothetical_and_arithmetically_true():
 
 async def test_score_if_does_not_mutate_the_real_result():
     """A what-if must leave the stored evaluation untouched."""
+    # Record the real score first, run a what-if, then confirm nothing changed.
     stored = outputs()
     tools = {t.name: t for t in build_tools(LABEL, stored, WEIGHTS)}
     before = aggregate_candidate(LABEL, stored, WEIGHTS).overall
@@ -124,6 +149,7 @@ async def test_score_if_does_not_mutate_the_real_result():
 )
 async def test_score_if_rejects_bad_arguments_as_a_value(arguments):
     """A bad argument is returned to the model to correct, not raised."""
+    # Unknown dimension, score too high, score too low: each must come back as an error dict.
     tools = {t.name: t for t in build_tools(LABEL, outputs(), WEIGHTS)}
     result = await tools["score_if"].invoke(arguments)
     assert "error" in result
@@ -134,8 +160,10 @@ async def test_a_raising_handler_becomes_an_error_result():
     from services.llm.base import ToolDefinition
 
     def explode() -> dict:
+        """Tool handler that always fails."""
         raise RuntimeError("boom")
 
+    # Wrap the failing handler as a tool; invoking it must return the error, not raise.
     tool = ToolDefinition(
         name="explode", description="", input_schema={"type": "object"}, handler=explode
     )
@@ -150,6 +178,7 @@ async def test_a_raising_handler_becomes_an_error_result():
 def test_the_prompt_withholds_the_overall_score():
     """If the number were in the prompt the model could quote it without the
     tool, and the provenance trail would be a fiction."""
+    # Build the prompt and the true score, then check the score never appears in the prompt.
     prompt = build_prompt(LABEL, outputs(), metrics(), "Should AI be regulated?")
     expected = aggregate_candidate(LABEL, outputs(), WEIGHTS)
 
@@ -161,6 +190,8 @@ def test_the_prompt_withholds_the_overall_score():
 
 
 def test_the_system_prompt_forbids_inventing_numbers():
+    """The synthesis prompt tells the model to use tool numbers only."""
+    # Case-insensitive check that the two key rules are in the instructions.
     lowered = SYSTEM_PROMPT.lower()
     assert "you do not decide the score" in lowered
     assert "never state a number you were not given by a tool" in lowered
@@ -168,6 +199,7 @@ def test_the_system_prompt_forbids_inventing_numbers():
 
 def test_the_response_schema_has_no_score_field():
     """Structural: there is nowhere for a score to go (claude.md invariant 5)."""
+    # The exact set of allowed output fields; none may mention a score.
     properties = set(RESPONSE_SCHEMA["properties"])
     assert properties == {
         "summary",
@@ -184,6 +216,7 @@ def test_the_response_schema_has_no_score_field():
 
 async def test_synthesis_records_the_tool_calls_it_made():
     """Provenance: you can show what the model asked and what it was told."""
+    # The stub always calls every tool once, so both calls must be recorded in order.
     set_llm_provider(StubLLM())
     result = await synthesise(LABEL, outputs(), WEIGHTS, metrics(), "topic")
 
@@ -195,6 +228,7 @@ async def test_synthesis_records_the_tool_calls_it_made():
 async def test_a_synthesis_failure_degrades_rather_than_raises():
     """The score, dimensions and evidence are already stored — losing the
     narrative must not lose the report."""
+    # With the model down, synthesis returns an "unavailable" result instead of raising.
     set_llm_provider(StubLLM(fail=True))
     result = await synthesise(LABEL, outputs(), WEIGHTS, metrics(), "topic")
 
@@ -204,6 +238,7 @@ async def test_a_synthesis_failure_degrades_rather_than_raises():
 
 
 async def test_no_dimension_scores_means_nothing_to_synthesise():
+    """With no dimension scores synthesis reports an error instead of a narrative."""
     set_llm_provider(StubLLM())
     result = await synthesise(LABEL, [], WEIGHTS, metrics(), "topic")
     assert result.error == "no dimension scores to synthesise"
@@ -213,10 +248,12 @@ async def test_a_model_inventing_a_score_field_cannot_reach_the_report():
     """Even a model that tries to smuggle a number out has nowhere to put it."""
 
     class Smuggler:
+        """Fake model that smuggles an extra overall_score into its reply."""
         name = "smuggler"
         model = "test"
 
         async def complete_with_tools(self, *, system, prompt, tools, schema, **kwargs):
+            """Return a reply that includes a made-up overall_score."""
             return LLMResult(
                 data={
                     "summary": "s",
@@ -230,6 +267,7 @@ async def test_a_model_inventing_a_score_field_cannot_reach_the_report():
                 tool_calls=[ToolInvocation(name="compute_final_score", arguments={}, result={})],
             )
 
+    # Run synthesis against the cheating model and check the extra fields were discarded.
     set_llm_provider(Smuggler())
     result = await synthesise(LABEL, outputs(), WEIGHTS, metrics(), "topic")
 
@@ -251,11 +289,15 @@ async def test_a_model_inventing_a_score_field_cannot_reach_the_report():
 
 
 class _Seg:
+    """Minimal transcript segment stand-in."""
     def __init__(self, who: str, start: float, text: str) -> None:
+        """Store speaker, start time and text."""
         self.candidate_id, self.start, self.text = who, start, text
 
 
 def test_the_prompt_carries_only_this_candidates_own_lines():
+    """Only the candidate's own lines are put in their prompt."""
+    # A mixed transcript: only A's two lines (with mm:ss stamps) should be extracted.
     segments = [
         _Seg("A", 5, "Remote work widens the talent pool."),
         _Seg("B", 20, "Hallway chats matter."),
@@ -272,6 +314,8 @@ def test_the_prompt_carries_only_this_candidates_own_lines():
 
 
 def test_long_transcripts_keep_the_start_and_the_end():
+    """Long transcripts are trimmed but keep the first and last lines."""
+    # 30 lines exceed the cap, so the middle is dropped but first and last survive.
     segments = [_Seg("A", i * 10, f"point {i}") for i in range(30)]
     lines = own_lines_for("A", segments)
     assert len(lines) == 12
@@ -279,20 +323,25 @@ def test_long_transcripts_keep_the_start_and_the_end():
 
 
 def test_the_system_prompt_demands_descriptive_plain_language():
+    """The prompt asks for plain, descriptive wording."""
     assert "has not seen the scoring rubric" in SYSTEM_PROMPT
     assert "dimension_notes" in SYSTEM_PROMPT
 
 
 def test_the_system_prompt_demands_personal_advice():
+    """The prompt asks for advice specific to this candidate."""
     assert "pasted into anyone else's report" in SYSTEM_PROMPT
 
 
 async def test_strengths_and_focus_areas_reach_the_report_and_bad_items_are_dropped():
+    """Valid strengths/focus areas reach the report and malformed items are dropped."""
     class Writer:
+        """Fake model returning strengths and focus areas, some malformed."""
         name = "writer"
         model = "test"
 
         async def complete_with_tools(self, *, system, prompt, tools, schema, **kwargs):
+            """Return a reply with good and bad strengths/focus areas."""
             return LLMResult(
                 data={
                     "summary": "s",
@@ -323,6 +372,7 @@ async def test_strengths_and_focus_areas_reach_the_report_and_bad_items_are_drop
                 tool_calls=[],
             )
 
+    # Only the well-formed strength and focus area should survive the filtering.
     set_llm_provider(Writer())
     result = await synthesise(LABEL, outputs(), WEIGHTS, metrics(), "topic", [])
     assert [s["point"] for s in result.strengths] == ["Cited data"]

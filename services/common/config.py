@@ -2,18 +2,41 @@
 
 Everything defaults to localhost. This project is never deployed — see the
 "Deployment — LOCAL ONLY" section of claude.md.
+
+Purpose:    one typed object (`settings`) holding every tunable of the backend,
+            read from environment variables or the repo's `.env`.
+Why needed: ports, secrets, provider choices (LLM, speech, storage) and scoring
+            knobs must change per machine without editing code; centralising
+            them also means a typo in a variable name fails once, here.
+Contains:
+    REPO_ROOT      - repo path, used to find `.env`.
+    Settings       - the typed settings model (database, Redis, LiveKit, MinIO,
+                     speech, LLM, platform bridge, evaluation engine/strategy).
+      .sqlalchemy_url   - builds the DB URL (Postgres, or the SQLite override
+                          the tests use).
+      .allowed_origins  - CORS origins for the browser app.
+    get_settings   - builds Settings once (cached) so `.env` is read one time.
+    settings       - the shared singleton everyone imports.
+Used by:    nearly every package: ai_platform, auth, common (contracts, db,
+            redis_client, security, storage), evaluation, llm, practice,
+            realtime, session, speech, main, simulation, migrations/env,
+            scripts/simulate_gd and many tests.
+Depends on: nothing inside the project (pydantic-settings only).
 """
 
-from functools import lru_cache
-from pathlib import Path
+from functools import lru_cache  # cache the Settings instance so .env is read once
+from pathlib import Path  # locate the repo root and the .env file
 
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field  # default factories for mutable defaults (dict/list)
+from pydantic_settings import BaseSettings, SettingsConfigDict  # typed env-backed settings
 
+# Repo root: this file is services/common/config.py, so two levels up.
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
+    """Every tunable of the app, read from environment variables or the repo's .env."""
+
     model_config = SettingsConfigDict(
         env_file=REPO_ROOT / ".env",
         env_file_encoding="utf-8",
@@ -141,12 +164,16 @@ class Settings(BaseSettings):
     prompt_version: str = "1.0"
     agent_version: str = "1.0"
 
+    # Extra browser origins allowed by CORS; empty means just FRONTEND_ORIGIN.
     cors_origins: list[str] = Field(default_factory=list)
 
     @property
     def sqlalchemy_url(self) -> str:
+        """Database URL: the explicit override if set, else the assembled Postgres URL."""
+        # The explicit override is how tests switch to in-memory SQLite.
         if self.database_url:
             return self.database_url
+        # Otherwise assemble the async Postgres URL from the individual parts.
         return (
             f"postgresql+asyncpg://{self.postgres_user}:{self.postgres_password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
@@ -154,12 +181,16 @@ class Settings(BaseSettings):
 
     @property
     def allowed_origins(self) -> list[str]:
+        """Origins the API accepts cross-origin requests from."""
+        # Fall back to the single frontend origin when no extras are configured.
         return self.cors_origins or [self.frontend_origin]
 
 
 @lru_cache
 def get_settings() -> Settings:
+    """Build the Settings object once and reuse it."""
     return Settings()
 
 
+# Import this singleton wherever a setting is needed.
 settings = get_settings()

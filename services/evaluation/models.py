@@ -1,5 +1,25 @@
 """Evaluation records (FR-20 – FR-30, design §19, §39, §40).
 
+Purpose:     The database tables for everything the evaluation pipeline produces:
+             jobs, raw agent verdicts, aggregated scores and rendered reports.
+Why needed:  Evaluation is asynchronous and must survive restarts and retries.
+             Persisting each stage separately makes every score re-derivable and
+             lets a redelivered queue message be recognised instead of producing
+             a duplicate report.
+Contains:
+  - `EvaluationJob`   one evaluation attempt per session; the unique
+                      `(session_id, evaluation_version)` key is the idempotency
+                      guarantee, and the stored rubric/prompt/agent versions make
+                      a result reproducible (design §40).
+  - `AgentOutput`     each agent's verdict on one candidate and dimension, exactly
+                      as validated, before aggregation.
+  - `CandidateScore`  the deterministic aggregator's result per candidate.
+  - `Report`          the rendered per-candidate (and group) report body.
+Used by:     evaluation/repository.py, evaluation/router.py,
+             evaluation/service.py, evaluation/worker.py, and tests/conftest.py
+             (imported so the tables are registered for the in-memory test DB).
+Depends on:  common/db.py (`Base`), session/state.py (`EvaluationState` default).
+
 Four tables, each answering a different question after the fact:
 
 * `evaluation_jobs`  — what was asked for, under which configuration versions
@@ -12,10 +32,10 @@ final number is always re-derivable from stored evidence plus the stored
 weights, so "which configuration produced this score" has an answer.
 """
 
-import uuid
-from datetime import datetime
+import uuid  # UUID primary keys
+from datetime import datetime  # timestamp column types
 
-from sqlalchemy import (
+from sqlalchemy import (  # column and constraint types
     DateTime,
     Float,
     ForeignKey,
@@ -26,11 +46,11 @@ from sqlalchemy import (
     Uuid,
     func,
 )
-from sqlalchemy.orm import Mapped, mapped_column
-from sqlalchemy.types import JSON
+from sqlalchemy.orm import Mapped, mapped_column  # typed ORM declarations
+from sqlalchemy.types import JSON  # rubric, agent output, report payloads
 
-from services.common.db import Base
-from services.session.state import EvaluationState
+from services.common.db import Base  # declarative base
+from services.session.state import EvaluationState  # default job state
 
 
 class EvaluationJob(Base):

@@ -16,15 +16,36 @@ Providers:
 
 The stub is selected automatically when the Whisper runtime is not installed,
 so a fresh clone can run the whole pipeline immediately.
+
+Purpose: Speech-to-text behind one interface (STTProvider) with four implementations: local
+    Whisper, ElevenLabs Scribe, any OpenAI-compatible endpoint, and a deterministic stub.
+Why needed: The rest of the system only depends on STTProvider, so the transcription vendor can
+    change, or be absent entirely, without touching business logic (design §54). The stub lets
+    the whole pipeline and test suite run with no model download or network.
+Contains:
+  - Utterance / Transcription: the result shape, with times relative to the chunk start.
+  - STTProvider: the one-method protocol everything depends on.
+  - StubSTT: deterministic fake transcripts derived from a hash of the audio.
+  - ElevenLabsSTT / OpenAICompatibleSTT: managed ASR over HTTP, one utterance at a time
+    (practice mode).
+  - WhisperSTT: local faster-whisper, loaded lazily and run in a worker thread.
+  - _logprob_to_confidence: map Whisper's log-probability to a 0-1 confidence.
+  - get_stt_provider / set_stt_provider: pick the process-wide provider from settings, or
+    override it in tests.
+Used by: services/ai_platform/skill_graph.py, services/practice/engine.py,
+    services/speech/service.py, services/tests/conftest.py, services/tests/test_openai_stt.py,
+    services/tests/test_panel.py, services/tests/test_platform.py,
+    services/tests/test_practice.py, services/tests/test_speech_pipeline.py
+Depends on: services/common/config.py
 """
 
-import asyncio
-import hashlib
-import logging
-from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
+import asyncio  # run blocking Whisper in a thread; lock for lazy model load
+import hashlib  # stub transcripts are derived from a hash of the audio
+import logging  # provider selection and model loading logs
+from dataclasses import dataclass, field  # Utterance / Transcription containers
+from typing import Protocol, runtime_checkable  # the STTProvider interface
 
-from services.common.config import settings
+from services.common.config import settings  # provider choice, keys, model names
 
 logger = logging.getLogger(__name__)
 
@@ -41,11 +62,14 @@ class Utterance:
 
 @dataclass(frozen=True, slots=True)
 class Transcription:
+    """The result of transcribing one audio chunk."""
+
     utterances: list[Utterance] = field(default_factory=list)
     language: str = "en"
 
     @property
     def text(self) -> str:
+        """All utterances joined into one string."""
         return " ".join(u.text for u in self.utterances).strip()
 
 
@@ -55,7 +79,9 @@ class STTProvider(Protocol):
 
     name: str
 
-    async def transcribe(self, audio: bytes, *, language: str | None = None) -> Transcription: ...
+    async def transcribe(self, audio: bytes, *, language: str | None = None) -> Transcription:
+        """Turn audio bytes into timestamped text (times relative to the chunk start)."""
+        ...
 
 
 class StubSTT:
@@ -83,10 +109,15 @@ class StubSTT:
         self._chunk_seconds = chunk_seconds
 
     async def transcribe(self, audio: bytes, *, language: str | None = None) -> Transcription:
+        """Return 1-3 canned phrases picked by the audio hash, evenly spread over the chunk."""
+        # Hash the audio so identical bytes always give identical text (deterministic for tests).
         digest = hashlib.sha256(audio).digest()
+        # Choose 1 to 3 utterances from the first hash byte.
         count = 1 + digest[0] % 3
         utterances = []
+        # Spread the utterances evenly across the chunk.
         span = self._chunk_seconds / count
+        # Each utterance picks its phrase and confidence from different hash bytes.
         for i in range(count):
             phrase = self._PHRASES[digest[i + 1] % len(self._PHRASES)]
             utterances.append(
@@ -116,11 +147,14 @@ class ElevenLabsSTT:
         self._base = base_url.rstrip("/")
 
     async def transcribe(self, audio: bytes, *, language: str | None = None) -> Transcription:
-        import httpx
+        """POST the utterance to Scribe and wrap the returned text as one utterance."""
+        import httpx  # imported lazily so offline setups never need it
 
+        # Scribe form fields: the model, plus an optional language hint.
         data = {"model_id": self._model}
         if language:
             data["language_code"] = language
+        # Network or HTTP errors become a RuntimeError, which the caller records as a FAILED chunk.
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
@@ -134,11 +168,14 @@ class ElevenLabsSTT:
         except (httpx.HTTPError, ValueError) as exc:
             raise RuntimeError(f"ElevenLabs STT failed: {exc}") from exc
 
+        # Scribe returns one text blob plus per-word timings.
         text = str(body.get("text", "")).strip()
         if not text:
             return Transcription(utterances=[], language=body.get("language_code") or "en")
+        # Use the last word's end time as the utterance length (0 if there are no word timings).
         words = body.get("words") or []
         end = float(words[-1].get("end", 0.0)) if words else 0.0
+        # One utterance covering the whole clip, with a fixed confidence of 0.9.
         return Transcription(
             utterances=[Utterance(start=0.0, end=end, text=text, confidence=0.9)],
             language=body.get("language_code") or "en",
@@ -161,11 +198,14 @@ class OpenAICompatibleSTT:
         self._base = (base_url or "https://api.openai.com/v1").rstrip("/")
 
     async def transcribe(self, audio: bytes, *, language: str | None = None) -> Transcription:
-        import httpx
+        """POST the utterance to /audio/transcriptions and map its segments to utterances."""
+        import httpx  # imported lazily so offline setups never need it
 
+        # verbose_json includes per-segment timings and log-probabilities.
         data = {"model": self._model, "response_format": "verbose_json"}
         if language:
             data["language"] = language
+        # Network or HTTP errors become a RuntimeError, which the caller records as a FAILED chunk.
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
@@ -179,6 +219,7 @@ class OpenAICompatibleSTT:
         except (httpx.HTTPError, ValueError) as exc:
             raise RuntimeError(f"speech-to-text failed: {exc}") from exc
 
+        # Skip empty segments and convert Whisper's log-probability into a 0-1 confidence.
         segments = body.get("segments") or []
         utterances = [
             Utterance(
@@ -191,6 +232,7 @@ class OpenAICompatibleSTT:
             if str(s.get("text", "")).strip()
         ]
         text = str(body.get("text", "")).strip()
+        # Some servers return only a text blob without segments; wrap it as one utterance.
         if not utterances and text:
             end = float(body.get("duration") or 0.0)
             utterances = [Utterance(start=0.0, end=end, text=text, confidence=0.9)]
@@ -221,15 +263,20 @@ class WhisperSTT:
         self._lock = asyncio.Lock()
 
     async def _get_model(self):
+        """Load the Whisper model once (double-checked under a lock) and reuse it."""
+        # Double-checked locking: skip the lock once the model is loaded.
         if self._model is None:
             async with self._lock:
+                # Re-check inside the lock in case another request loaded it meanwhile.
                 if self._model is None:
+                    # Imported lazily so the package is only needed when Whisper is actually used.
                     from faster_whisper import WhisperModel
 
                     logger.info(
                         "loading whisper model",
                         extra={"model": self._model_size, "device": self._device},
                     )
+                    # Model loading is slow and blocking, so it runs in a worker thread.
                     self._model = await asyncio.to_thread(
                         WhisperModel,
                         self._model_size,
@@ -239,11 +286,14 @@ class WhisperSTT:
         return self._model
 
     async def transcribe(self, audio: bytes, *, language: str | None = None) -> Transcription:
-        import io
+        """Transcribe locally with faster-whisper, off the event loop."""
+        import io  # wrap the bytes as a file-like object for the model
 
+        # Load (or reuse) the model before starting the worker thread.
         model = await self._get_model()
 
         def _run() -> Transcription:
+            """Blocking transcription, executed in a worker thread."""
             segments, info = model.transcribe(
                 io.BytesIO(audio),
                 language=language,
@@ -266,6 +316,7 @@ class WhisperSTT:
             ]
             return Transcription(utterances=utterances, language=info.language or "en")
 
+        # Run the blocking transcription in a thread so the event loop stays responsive.
         return await asyncio.to_thread(_run)
 
 
@@ -275,11 +326,12 @@ def _logprob_to_confidence(avg_logprob: float) -> float:
     exp(avg_logprob) is the geometric mean token probability, which is already
     a reasonable confidence and always lands in range.
     """
-    import math
+    import math  # exp() to turn log-probability into probability
 
     return max(0.0, min(1.0, math.exp(avg_logprob)))
 
 
+# Process-wide provider, created on first use by get_stt_provider().
 _provider: STTProvider | None = None
 
 
@@ -290,24 +342,31 @@ def get_stt_provider() -> STTProvider:
     faster-whisper is not installed, so the pipeline always runs.
     """
     global _provider
+    # Cached after first use: one provider per process.
     if _provider is not None:
         return _provider
 
+    # Normalise the configured provider name; auto picks the best one available.
     choice = (settings.stt_provider or "auto").lower()
+    # ElevenLabs when asked for, or when auto finds an API key.
     if choice == "elevenlabs" or (choice == "auto" and settings.elevenlabs_api_key):
         _provider = ElevenLabsSTT(
             settings.elevenlabs_api_key, settings.elevenlabs_stt_model, settings.elevenlabs_base_url
         )
+    # OpenAI-compatible endpoint, reusing the LLM key and base URL.
     elif choice == "openai":
         _provider = OpenAICompatibleSTT(
             settings.llm_api_key or settings.openai_api_key,
             settings.openai_stt_model,
             settings.openai_base_url,
         )
+    # Deterministic offline provider.
     elif choice == "stub":
         _provider = StubSTT()
+    # Local faster-whisper.
     elif choice == "whisper":
         _provider = WhisperSTT(model_size=settings.whisper_model)
+    # Auto fallback: use Whisper if installed, otherwise the stub, so the pipeline always runs.
     else:
         try:
             import faster_whisper  # noqa: F401
@@ -320,6 +379,7 @@ def get_stt_provider() -> STTProvider:
             )
             _provider = StubSTT()
 
+    # Log the choice once so it is obvious which backend is in use.
     logger.info("stt provider selected", extra={"provider": _provider.name})
     return _provider
 
@@ -327,4 +387,5 @@ def get_stt_provider() -> STTProvider:
 def set_stt_provider(provider: STTProvider | None) -> None:
     """Override the provider. Used by tests and by the reprocessing worker."""
     global _provider
+    # None clears the cache so the next call re-selects.
     _provider = provider

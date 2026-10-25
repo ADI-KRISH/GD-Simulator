@@ -15,26 +15,49 @@ the model politely:
 * **It cannot break the session.** Every failure path returns the previous
   state and logs. A dead LLM means the rolling state stops updating and nothing
   else (invariant 1, design §38).
+
+Purpose: The Observer agent: given the previous rolling state, a new 45-second transcript chunk
+    and the latest metrics, it asks the LLM for an updated rolling state and validates the
+    answer.
+Why needed: It keeps a compressed running picture of the discussion (main arguments, positions,
+    interactions, open questions) that final evaluation can read alongside the raw transcript,
+    without ever scoring anyone mid-session. Every failure returns the previous state, so a dead
+    LLM never touches the live session.
+Contains:
+  - OBSERVER_PROMPT_VERSION: bump when the prompt changes so results stay reproducible (design
+    §40).
+  - SYSTEM_PROMPT: instructions that forbid scoring and demand observations only.
+  - ObserverUpdate: result of one step (new state, chunk index, changed flag, error).
+  - _observation_schema: the RollingState contract minus session_id, which the model must not
+    supply.
+  - build_prompt: assemble topic, previous state, new chunk and measured metrics into one
+    prompt.
+  - observe: run one update step; never raises and falls back to the previous state.
+Used by: services/observer/service.py, services/tests/test_llm_providers.py,
+    services/tests/test_observer.py
+Depends on: services/common/contracts.py, services/llm/__init__.py, services/speech/chunking.py
 """
 
-import json
-import logging
-from dataclasses import dataclass
+import json  # deep-copy the schema via a JSON round trip
+import logging  # warn when an update fails
+from dataclasses import dataclass  # ObserverUpdate container
 
-from services.common.contracts import (
+from services.common.contracts import (  # contract models and validation gate
     CandidateMetrics,
     ContractError,
     RollingState,
     load_schema,
     parse_rolling_state,
 )
-from services.llm import LLMError, get_llm_provider
-from services.speech.chunking import Chunk
+from services.llm import LLMError, get_llm_provider  # provider-agnostic LLM access
+from services.speech.chunking import Chunk  # a 45-second transcript window
 
 logger = logging.getLogger(__name__)
 
+# Bump when SYSTEM_PROMPT or build_prompt changes so results stay reproducible (design §40).
 OBSERVER_PROMPT_VERSION = "1.0"
 
+# Fixed instructions: observe and compress, never judge or score.
 SYSTEM_PROMPT = """\
 You are the Observer Agent in a group discussion evaluation system.
 
@@ -75,9 +98,13 @@ def _observation_schema() -> dict:
     and trusting a returned one would be a way to write state onto the wrong
     session. `parse_rolling_state` puts the real one back.
     """
+    # Deep-copy through JSON so editing the schema never mutates the shared cached contract.
     schema = json.loads(json.dumps(load_schema("rolling_state")))
+    # Drop session_id: the model must not supply it (see the docstring).
     schema["properties"].pop("session_id", None)
+    # Also remove it from the required list, otherwise validation would demand it.
     schema["required"] = [key for key in schema.get("required", []) if key != "session_id"]
+    # Strip metadata keys that are not part of the shape the model must produce.
     schema.pop("$schema", None)
     schema.pop("$id", None)
     schema.pop("examples", None)
@@ -97,14 +124,18 @@ def build_prompt(
     the numbers are already computed deterministically, so letting the model
     re-estimate them would be strictly worse (claude.md invariant 4).
     """
+    # One compact line of measured numbers per candidate, sorted by label.
     metric_lines = "\n".join(
         f"  {label}: {m.speaking_seconds:.0f}s speaking "
         f"({m.participation_ratio * 100:.0f}% of floor), {m.turns} turns, "
         f"{m.interruptions} interruptions, {m.questions} questions"
         for label, m in sorted(metrics.items())
     )
+    # The previous state without session_id, since the model never sees or returns it.
     previous_json = previous.model_dump_json(indent=2, exclude={"session_id"})
 
+    # The prompt carries the topic, the previous state, the new chunk and the measured metrics
+    # (design §14.3).
     return f"""\
 DISCUSSION TOPIC
 {topic}
@@ -138,14 +169,18 @@ async def observe(
         # asking the model to "update" from nothing invites invention.
         return ObserverUpdate(state=previous, chunk_index=chunk.index, changed=False)
 
+    # Whichever LLM is configured; the offline stub works too.
     provider = get_llm_provider()
     prompt = build_prompt(previous, chunk, metrics, topic)
 
+    # Ask for JSON matching the contract, then validate it before trusting it.
     try:
         result = await provider.complete_json(
             system=SYSTEM_PROMPT, prompt=prompt, schema=_observation_schema()
         )
+        # Re-attaches the real session id and rejects malformed output.
         state = parse_rolling_state(result.data, session_id)
+    # Either failure keeps the previous state so the session is never affected.
     except (LLMError, ContractError) as exc:
         logger.warning(
             "observer update failed; keeping previous state",
@@ -155,4 +190,5 @@ async def observe(
             state=previous, chunk_index=chunk.index, changed=False, error=str(exc)
         )
 
+    # Success: the new state replaces the old one.
     return ObserverUpdate(state=state, chunk_index=chunk.index, changed=True)

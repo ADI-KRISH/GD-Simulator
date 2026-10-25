@@ -5,16 +5,39 @@ stub produces no audio at all - it only reports how long the line would take to
 say - so the rest of the practice loop (turn-taking, barge-in, tracking) runs and
 is testable with no key and no network. The browser speaks stub lines itself with
 `speechSynthesis`, so a fresh clone still talks.
+
+Purpose: Text-to-speech behind one interface (TTSProvider) with three implementations:
+    ElevenLabs streaming, free Microsoft Edge voices, and a no-audio stub that lets the browser
+    speak the text itself.
+Why needed: Practice mode needs AI personas that talk. Hiding the vendor behind TTSProvider
+    means the turn-taking loop works with any voice backend, or with none, and a TTS failure
+    only drops a persona back to text.
+Contains:
+  - Constants (WORDS_PER_SECOND, MP3_BYTES_PER_SECOND, VOICE_SETTINGS): used to estimate
+    speaking time and tune delivery.
+  - TTSError: raised on any vendor failure; callers fall back to text-only.
+  - estimate_seconds: rough speaking time of a line from its word count.
+  - TTSProvider: protocol with a streaming method and byte-rate metadata.
+  - StubTTS: yields no audio; the browser uses speechSynthesis.
+  - ElevenLabsTTS: streams mp3 chunks over HTTP.
+  - EdgeVoice / edge_voice_for / EdgeTTS: map each persona's stored voice to an Edge neural
+    voice with its own pace and pitch.
+  - get_tts_provider / set_tts_provider: pick the process-wide provider from settings, or
+    override it in tests.
+Used by: services/practice/engine.py, services/practice/router.py, services/simulation.py,
+    services/tests/test_edge_voices.py, services/tests/test_panel.py,
+    services/tests/test_practice.py
+Depends on: services/common/config.py
 """
 
-import logging
-from collections.abc import AsyncIterator
-from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+import logging  # provider selection logs
+from collections.abc import AsyncIterator  # TTS streams audio bytes as they arrive
+from dataclasses import dataclass  # EdgeVoice container
+from typing import Protocol, runtime_checkable  # the TTSProvider interface
 
-import httpx
+import httpx  # HTTP streaming to the ElevenLabs API
 
-from services.common.config import settings
+from services.common.config import settings  # provider choice, key, model, base URL
 
 logger = logging.getLogger(__name__)
 
@@ -38,26 +61,35 @@ class TTSError(RuntimeError):
 
 
 def estimate_seconds(text: str) -> float:
+    """Rough speaking time for a line (at least one second), from its word count."""
+    # Never less than one second, so very short lines still get a turn-taking window.
     return max(1.0, len(text.split()) / WORDS_PER_SECOND)
 
 
 @runtime_checkable
 class TTSProvider(Protocol):
+    """What the practice loop needs from any text-to-speech backend."""
+
     name: str
     # Used to turn streamed byte counts into a duration for turn-taking.
     mp3_bytes_per_second: int
     # False = no audio bytes are produced; the client voices the text itself.
     produces_audio: bool
 
-    def stream(self, text: str, voice_id: str) -> AsyncIterator[bytes]: ...
+    def stream(self, text: str, voice_id: str) -> AsyncIterator[bytes]:
+        """Yield mp3 bytes for `text` in the given voice."""
+        ...
 
 
 class StubTTS:
+    """No-audio provider: the browser speaks the text itself with speechSynthesis."""
+
     name = "stub"
     mp3_bytes_per_second = MP3_BYTES_PER_SECOND
     produces_audio = False
 
     async def stream(self, text: str, voice_id: str) -> AsyncIterator[bytes]:
+        """Yield nothing (an empty async generator)."""
         return
         yield b""  # pragma: no cover - makes this an async generator
 
@@ -79,8 +111,12 @@ class ElevenLabsTTS:
         self._base = base_url.rstrip("/")
 
     async def stream(self, text: str, voice_id: str) -> AsyncIterator[bytes]:
+        """Stream mp3 chunks from ElevenLabs; raises TTSError on any HTTP failure."""
+        # The streaming endpoint for the chosen voice.
         url = f"{self._base}/v1/text-to-speech/{voice_id}/stream"
+        # Network and HTTP errors are converted to TTSError so callers can fall back to text-only.
         try:
+            # Open the HTTP client and the streaming POST together so both close on exit.
             async with (
                 httpx.AsyncClient(timeout=30.0) as client,
                 client.stream(
@@ -95,9 +131,11 @@ class ElevenLabsTTS:
                     },
                 ) as response,
             ):
+                # Non-200 means no audio: raise with a snippet of the body for diagnosis.
                 if response.status_code != 200:
                     body = (await response.aread())[:200]
                     raise TTSError(f"ElevenLabs TTS returned {response.status_code}: {body!r}")
+                # Forward bytes as they arrive so playback can start before synthesis finishes.
                 async for chunk in response.aiter_bytes(4096):
                     if chunk:
                         yield chunk
@@ -140,8 +178,10 @@ _EDGE_DEFAULT_VOICE = EdgeVoice("en-IN-NeerjaNeural")
 
 def edge_voice_for(voice_id: str) -> EdgeVoice:
     """A persona's stored voice_id -> Edge voice. A bare Edge name is used as is."""
+    # A bare Edge voice name is used as is.
     if "Neural" in voice_id:
         return EdgeVoice(voice_id)
+    # Otherwise map the ElevenLabs preset id, falling back to a default voice.
     return _EDGE_BY_PRESET_VOICE.get(voice_id, _EDGE_DEFAULT_VOICE)
 
 
@@ -159,11 +199,15 @@ class EdgeTTS:
     mp3_bytes_per_second = 6_000
 
     async def stream(self, text: str, voice_id: str) -> AsyncIterator[bytes]:
+        """Stream mp3 chunks from the Edge read-aloud service in the mapped voice."""
+        # edge-tts is optional, so import it only when this provider is used.
         try:
-            import edge_tts
+            import edge_tts  # optional dependency, imported only when this provider is used
         except ImportError as exc:
             raise TTSError("edge-tts is not installed (pip install edge-tts)") from exc
+        # Per-persona voice, pace and pitch.
         choice = edge_voice_for(voice_id)
+        # Stream the audio chunks and skip the metadata chunks Edge interleaves.
         try:
             async for chunk in edge_tts.Communicate(
                 text, choice.voice, rate=choice.rate, pitch=choice.pitch
@@ -174,23 +218,30 @@ class EdgeTTS:
             raise TTSError(f"Edge TTS failed: {exc}") from exc
 
 
+# Process-wide provider, created on first use by get_tts_provider().
 _provider: TTSProvider | None = None
 
 
 def get_tts_provider() -> TTSProvider:
     """ElevenLabs when a key is configured (or `TTS_PROVIDER=elevenlabs`), else the stub."""
     global _provider
+    # Cached after first use.
     if _provider is not None:
         return _provider
+    # auto prefers ElevenLabs when a key exists, otherwise the stub.
     choice = (settings.tts_provider or "auto").lower()
+    # Edge: free neural voices, no key.
     if choice == "edge":
         _provider = EdgeTTS()
+    # ElevenLabs by request, or because auto found a key.
     elif choice == "elevenlabs" or (choice == "auto" and settings.elevenlabs_api_key):
+        # Explicitly asked for ElevenLabs without a key: fail loudly rather than go silent.
         if not settings.elevenlabs_api_key:
             raise TTSError("TTS_PROVIDER=elevenlabs but ELEVENLABS_API_KEY is empty")
         _provider = ElevenLabsTTS(
             settings.elevenlabs_api_key, settings.elevenlabs_tts_model, settings.elevenlabs_base_url
         )
+    # No key: practice personas are spoken by the browser's built-in voices.
     else:
         logger.warning("no ElevenLabs key; practice personas will use browser speech")
         _provider = StubTTS()
@@ -201,4 +252,5 @@ def get_tts_provider() -> TTSProvider:
 def set_tts_provider(provider: TTSProvider | None) -> None:
     """Override the provider. Used by tests."""
     global _provider
+    # None clears the cache so the next call re-selects.
     _provider = provider

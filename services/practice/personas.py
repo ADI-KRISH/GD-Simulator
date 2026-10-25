@@ -1,20 +1,42 @@
 """AI discussion personas for solo practice.
 
+Purpose:     Defines the six built-in AI discussion partners (voice, speaking
+             style, brief) and turns a practice request (presets or custom
+             personas) into the stored rows a practice session uses.
+Why needed:  Practice mode needs believable, distinct opponents. Centralising them
+             here keeps their personalities and voices in one editable place, and
+             `resolve_personas` gives every panel member a sampled stance so the
+             group disagrees instead of nodding along.
+Contains:
+  - `Persona`            a frozen persona definition (+ `public` for the API).
+  - `PRESETS`            the six ready-made personas, keyed by name.
+  - `PERSONA_LABEL_PREFIX`  "P" prefix so persona labels (P1..) never clash with
+                         candidate letters (A, B, ...).
+  - `resolve_personas`   validate a request, apply voice overrides, assign
+                         labels, stances and angles.
+Used by:     practice/router.py (lists personas and builds sessions),
+             services/simulation.py, tests/test_panel.py, tests/test_practice.py,
+             tests/test_edge_voices.py.
+Depends on:  common/config.py (per-persona voice overrides) and
+             practice/panel.py (`sample_stances`, `sample_angles`).
+
 Each persona is a voice (an ElevenLabs premade voice id), a speaking style and a
 short brief the LLM plays. They are non-scored speakers: they share the floor
 with the student and are tracked like anyone else, but only the student is
 evaluated.
 """
 
-import random
-from dataclasses import asdict, dataclass
+import random  # seedable RNG for stance/angle sampling
+from dataclasses import asdict, dataclass  # Persona container and its dict form
 
-from services.common.config import settings
-from services.practice.panel import sample_angles, sample_stances
+from services.common.config import settings  # per-persona voice overrides
+from services.practice.panel import sample_angles, sample_stances  # give each persona a view
 
 
 @dataclass(frozen=True, slots=True)
 class Persona:
+    """A built-in AI discussion partner: identity, brief for the LLM, and voice."""
+
     key: str
     name: str
     tagline: str
@@ -26,9 +48,12 @@ class Persona:
     eagerness: float = 1.0
 
     def public(self) -> dict:
+        """The persona as a plain dict for the API."""
         return asdict(self)
 
 
+# The six ready-made personas, keyed by `key`. Positional args: key, name, tagline,
+# brief, voice_id, then (optionally) gender and eagerness.
 PRESETS: dict[str, Persona] = {
     p.key: p
     for p in (
@@ -104,9 +129,12 @@ def resolve_personas(requested: list[dict], rng: random.Random | None = None) ->
     """
     rows: list[dict] = []
     for index, item in enumerate(requested, start=1):
+        # Either a known preset, or a custom persona the student described.
         preset = PRESETS.get(str(item.get("preset", "")).lower())
+        # Naming a preset that doesn't exist is an error, not a silent fallback.
         if item.get("preset") and preset is None:
             raise ValueError(f"unknown persona preset {item['preset']!r}")
+        # Preset: copy its definition, letting .env swap the voice.
         if preset:
             row = {
                 "name": preset.name,
@@ -117,6 +145,7 @@ def resolve_personas(requested: list[dict], rng: random.Random | None = None) ->
                 "eagerness": preset.eagerness,
             }
         else:
+            # Custom persona: needs a name and a description; fields are length-capped below.
             name = str(item.get("name", "")).strip()
             brief = str(item.get("persona", "")).strip()
             if not name or not brief:
@@ -128,7 +157,9 @@ def resolve_personas(requested: list[dict], rng: random.Random | None = None) ->
                 "gender": str(item.get("gender") or "f")[:1].lower(),
                 "eagerness": 1.0,
             }
+        # Give each persona a transcript label (P1, P2, ...) in request order.
         rows.append({"label": f"{PERSONA_LABEL_PREFIX}{index}", **row})
+    # Assign every persona a sampled stance and angle so the panel genuinely disagrees.
     rng = rng or random.Random()
     for row, stance, angle in zip(
         rows, sample_stances(len(rows), rng), sample_angles(len(rows), rng), strict=True

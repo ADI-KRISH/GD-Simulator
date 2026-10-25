@@ -24,16 +24,20 @@ class RateLimited(Exception):
     status_code = 429
 
     def __init__(self, wait: str = "20"):
+        """Build a 429 error that says how long to wait."""
         super().__init__(f"Error code: 429 - rate limited, try again in {wait}s")
         self.response = SimpleNamespace(headers={"retry-after": wait})
 
 
 class FakeCompletions:
+    """Fake chat-completions endpoint that plays back a script of replies/errors."""
     def __init__(self, script):
+        """Take the script to play back."""
         self.script = list(script)
         self.requests: list[dict] = []
 
     async def create(self, **request):
+        """Record the request and return or raise the next scripted step."""
         self.requests.append(dict(request))
         step = self.script.pop(0)
         if isinstance(step, Exception):
@@ -42,6 +46,7 @@ class FakeCompletions:
 
 
 def _reply(content='{"ok": true}'):
+    """A fake successful completion."""
     message = SimpleNamespace(content=content, tool_calls=None, refusal=None)
     return SimpleNamespace(
         choices=[SimpleNamespace(message=message, finish_reason="stop")],
@@ -51,6 +56,7 @@ def _reply(content='{"ok": true}'):
 
 
 def _provider(model, script):
+    """An OpenAIProvider wired to a scripted fake client."""
     provider = OpenAIProvider(model=model, api_key="k")
     completions = FakeCompletions(script)
     provider._client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
@@ -59,11 +65,13 @@ def _provider(model, script):
 
 @pytest.fixture(autouse=True)
 def clean_state(monkeypatch):
+    """Reset cooldowns and replace sleep with a recorder; restore settings afterwards."""
     saved = (settings.llm_model, settings.llm_fallback_models, settings.llm_reasoning_effort)
     openai_provider._COOLING_UNTIL.clear()
     slept: list[float] = []
 
     async def fake_sleep(seconds):
+        """Record the requested wait instead of sleeping."""
         slept.append(seconds)
 
     monkeypatch.setattr(openai_provider.asyncio, "sleep", fake_sleep)
@@ -75,6 +83,7 @@ def clean_state(monkeypatch):
 
 
 async def test_a_rate_limited_model_hands_the_call_to_the_fallback_at_once(clean_state):
+    """On a 429 the call moves to the fallback model without sleeping."""
     provider, completions = _provider(BIG, [RateLimited(), _reply()])
     await provider.complete_json(system="s", prompt="p", schema={"type": "object"})
     assert [r["model"] for r in completions.requests] == [BIG, SMALL]
@@ -82,6 +91,7 @@ async def test_a_rate_limited_model_hands_the_call_to_the_fallback_at_once(clean
 
 
 async def test_the_next_call_skips_a_model_that_is_still_cooling(clean_state):
+    """A model still cooling down is skipped by later calls."""
     first, _ = _provider(BIG, [RateLimited(), _reply()])
     await first.complete_json(system="s", prompt="p", schema={"type": "object"})
     second, completions = _provider(BIG, [_reply()])
@@ -90,6 +100,7 @@ async def test_the_next_call_skips_a_model_that_is_still_cooling(clean_state):
 
 
 async def test_when_every_model_is_cooling_the_call_waits_for_the_soonest(clean_state):
+    """When all models are cooling the call waits for the earliest to reopen."""
     now = openai_provider.time.monotonic()
     openai_provider._COOLING_UNTIL.update({BIG: now + 30, SMALL: now + 5})
     provider, completions = _provider(BIG, [_reply()])
@@ -99,6 +110,7 @@ async def test_when_every_model_is_cooling_the_call_waits_for_the_soonest(clean_
 
 
 async def test_reasoning_effort_follows_the_model_actually_called(clean_state):
+    """reasoning_effort is only sent to models that think first."""
     settings.llm_fallback_models = OTHER
     provider, completions = _provider(BIG, [RateLimited(), _reply()])
     await provider.complete_json(system="s", prompt="p", schema={"type": "object"})
@@ -108,6 +120,7 @@ async def test_reasoning_effort_follows_the_model_actually_called(clean_state):
 
 
 async def test_with_no_fallback_configured_a_429_still_waits_and_retries(clean_state):
+    """With no fallback, a 429 waits the advised time and retries the same model."""
     settings.llm_fallback_models = ""
     provider, completions = _provider(BIG, [RateLimited("7"), _reply()])
     await provider.complete_json(system="s", prompt="p", schema={"type": "object"})

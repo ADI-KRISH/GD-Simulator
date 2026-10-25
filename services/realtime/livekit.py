@@ -9,16 +9,31 @@ Token shape verified against the LiveKit docs and the `ClaimGrants`/`VideoGrant`
 definitions in livekit/node-sdks rather than from memory, as claude.md requires:
 standard `iss`/`sub`/`nbf`/`exp`/`jti` claims plus a nested `video` grant, signed
 HS256 with the API secret.
+
+Purpose: Mints the signed join tokens that let a browser enter a LiveKit media room, and names
+    the room for a session.
+Why needed: Audio and video run through LiveKit, but only this file knows it exists; building
+    the JWT directly keeps the media server a thin, swappable dependency without pulling in its
+    SDK.
+Contains:
+  - TOKEN_TTL: how long a join token stays valid.
+  - MediaGrant: what one participant may do in the room (publish, subscribe).
+  - room_name: one room per session, named from the session id.
+  - create_access_token: sign the HS256 JWT with the nested video grant.
+  - decode_access_token: verify a token we minted (tests and local debugging).
+Used by: services/session/router.py, services/tests/test_host_in_session.py,
+    services/tests/test_realtime_ws.py, services/tests/test_session_api.py
+Depends on: services/common/config.py, services/common/timeutil.py
 """
 
-import uuid
-from dataclasses import dataclass
-from datetime import timedelta
+import uuid  # unique token ids and room naming
+from dataclasses import dataclass  # MediaGrant container
+from datetime import timedelta  # token lifetime
 
-import jwt
+import jwt  # PyJWT: sign the LiveKit join token (HS256)
 
-from services.common.config import settings
-from services.common.timeutil import utcnow
+from services.common.config import settings  # LiveKit API key and secret
+from services.common.timeutil import utcnow  # token issue time
 
 # A join token only needs to outlive the session it was minted for. Long enough
 # to cover a full GD plus reconnects, short enough that a leaked one expires.
@@ -42,7 +57,10 @@ def room_name(session_id: uuid.UUID | str) -> str:
 
 
 def create_access_token(grant: MediaGrant, ttl: timedelta = TOKEN_TTL) -> str:
+    """Mint a signed LiveKit join token carrying the participant's room permissions."""
+    # Issue and expiry times come from one clock reading.
     now = utcnow()
+    # Standard JWT claims plus the LiveKit video grant.
     claims = {
         "iss": settings.livekit_api_key,
         "sub": grant.identity,
@@ -50,6 +68,7 @@ def create_access_token(grant: MediaGrant, ttl: timedelta = TOKEN_TTL) -> str:
         "exp": int((now + ttl).timestamp()),
         "jti": str(uuid.uuid4()),
         "name": grant.display_name,
+        # LiveKit reads the room permissions from this nested grant.
         "video": {
             "room": grant.room,
             "roomJoin": True,
@@ -61,11 +80,13 @@ def create_access_token(grant: MediaGrant, ttl: timedelta = TOKEN_TTL) -> str:
             "canPublishData": True,
         },
     }
+    # HS256 with the API secret, which the LiveKit server shares.
     return jwt.encode(claims, settings.livekit_api_secret, algorithm="HS256")
 
 
 def decode_access_token(token: str) -> dict:
     """Verify a token we minted. Used by tests and by the local debug endpoint."""
+    # verify_aud is off because our tokens carry no audience claim.
     return jwt.decode(
         token,
         settings.livekit_api_secret,

@@ -1,5 +1,22 @@
 """The LLM layer's vendor independence (design §54, claude.md).
 
+Purpose:     Tests the LLM layer's interface: provider selection from settings,
+             the OpenAI strict-mode schema check, failures surfacing as
+             `LLMError`, and the stub provider's behaviour.
+Why needed:  The whole point of `services/llm/` is that swapping vendors touches
+             one file. These tests defend that claim without any network calls,
+             and protect the strict-mode check whose mistakes only show up as 400
+             errors at runtime.
+Contains:    the `restore_provider` fixture (resets process-wide settings) and
+             tests for: provider selection, interface conformance, model from
+             settings, strict-mode detection (qualifying and disqualifying
+             schemas), no mutation of cached schemas, LLMError on failure, and a
+             schema-shaped, deterministic stub.
+Used by:     pytest (run with `pytest services/tests/test_llm_providers.py`).
+Depends on:  llm/ (provider selection, base types, OpenAI and stub providers),
+             common/config.py, common/contracts.py, evaluation/agents/definitions.py
+             and observer/agent.py (for real schemas to test against).
+
 The claim these defend is that swapping model vendors touches one file. So they
 check the *interface* — provider selection, the strict-mode subset detection
 that decides how a schema is sent to OpenAI, and that failures surface as
@@ -24,6 +41,7 @@ from services.observer.agent import _observation_schema
 @pytest.fixture(autouse=True)
 def restore_provider():
     """Provider selection is process-wide; put it back afterwards."""
+    # Remember the current settings, let the test run, then restore them (and the cache).
     original_provider = settings.llm_provider
     original_model = settings.llm_model
     yield
@@ -38,6 +56,7 @@ def restore_provider():
 )
 def test_provider_selection_follows_settings(configured, expected):
     """An unknown value falls back to the stub rather than failing to boot."""
+    # Change the setting, clear the cached provider, and see which one is built.
     settings.llm_provider = configured
     set_llm_provider(None)
     assert get_llm_provider().name == expected
@@ -45,6 +64,7 @@ def test_provider_selection_follows_settings(configured, expected):
 
 def test_every_provider_satisfies_the_interface():
     """The whole contract the rest of the system depends on."""
+    # Check a real vendor adapter and the stub against the same Protocol.
     settings.llm_provider = "openai"
     set_llm_provider(None)
     assert isinstance(get_llm_provider(), LLMProvider)
@@ -55,6 +75,7 @@ def test_every_provider_satisfies_the_interface():
 
 
 def test_openai_takes_its_model_from_settings():
+    """The OpenAI provider uses the configured model unless one is passed."""
     settings.llm_model = "gpt-4o-mini"
     assert OpenAIProvider().model == "gpt-4o-mini"
     # An explicit argument still wins, so a worker can pin a different model.
@@ -71,6 +92,7 @@ def test_openai_takes_its_model_from_settings():
 
 def test_the_evaluation_output_contract_qualifies_for_strict_mode():
     """Every property required, additionalProperties false throughout."""
+    # Use the real per-agent schema, since that's what is actually sent to the vendor.
     schema = CONTENT.response_schema("A")
     assert _strict_compatible(schema) is True
 
@@ -82,6 +104,8 @@ def test_the_rolling_state_contract_does_not_qualify():
 
 
 def test_an_optional_property_disqualifies_a_schema():
+    """A schema with an optional property cannot use strict mode."""
+    # "b" is declared but not in `required`, so it's optional.
     schema = {
         "type": "object",
         "additionalProperties": False,
@@ -92,6 +116,7 @@ def test_an_optional_property_disqualifies_a_schema():
 
 
 def test_an_open_object_disqualifies_a_schema():
+    """A schema allowing extra properties cannot use strict mode."""
     assert (
         _strict_compatible(
             {"type": "object", "required": ["a"], "properties": {"a": {"type": "string"}}}
@@ -102,6 +127,7 @@ def test_an_open_object_disqualifies_a_schema():
 
 def test_a_string_map_disqualifies_a_schema():
     """`additionalProperties: {schema}` is a map, which strict mode rejects."""
+    # The inner "positions" object is a free-form string-to-string map.
     schema = {
         "type": "object",
         "additionalProperties": False,
@@ -136,6 +162,7 @@ def test_nested_objects_are_checked():
 
 def test_the_raw_contract_files_are_unchanged_by_the_check():
     """The detection must not mutate the cached schema it inspects."""
+    # Snapshot the schema, run the check on it, then confirm the cached copy is unchanged.
     before = load_schema("evaluation_output")
     snapshot = str(before)
     _strict_compatible(before)
@@ -149,12 +176,14 @@ def test_the_raw_contract_files_are_unchanged_by_the_check():
 
 async def test_a_provider_failure_is_an_llm_error_not_a_vendor_exception():
     """Callers handle failure without importing a vendor's exception types."""
+    # A provider told to fail must raise the shared LLMError type.
     provider = StubLLM(fail=True)
     with pytest.raises(LLMError):
         await provider.complete_json(system="s", prompt="p", schema={"type": "object"})
 
 
 async def test_the_stub_returns_a_schema_shaped_result():
+    """The stub LLM returns data shaped like the schema."""
     provider = StubLLM()
     result = await provider.complete_json(
         system="s", prompt="p", schema=CONTENT.response_schema("A")
@@ -166,6 +195,7 @@ async def test_the_stub_returns_a_schema_shaped_result():
 
 async def test_the_stub_is_deterministic():
     """Same prompt, same output — the property that makes the pipeline testable."""
+    # Two calls with an identical prompt must return identical data.
     provider = StubLLM()
     schema = CONTENT.response_schema("A")
     first = await provider.complete_json(system="s", prompt="identical", schema=schema)
@@ -176,6 +206,7 @@ async def test_the_stub_is_deterministic():
 async def test_agents_are_pinned_to_one_candidate_and_dimension():
     """A single-value enum is what stops an agent scoring the wrong person —
     it holds for whichever provider is behind the interface."""
+    # Ask for the content agent's schema for candidate C and inspect the pinned enums.
     schema = CONTENT.response_schema("C")
     assert schema["properties"]["candidate_id"]["enum"] == ["C"]
     assert schema["properties"]["dimension"]["enum"] == ["content"]

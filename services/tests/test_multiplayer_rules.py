@@ -7,12 +7,14 @@ from services.session.models import GDSession
 
 
 async def _create(client, auth, payload):
+    """POST a new session."""
     return await client.post("/api/v1/sessions", json=payload, headers=auth)
 
 
 async def test_student_cannot_create_second_session(
     client: AsyncClient, candidate_auth: dict, session_payload: dict
 ):
+    """A student already seated in a session cannot create another."""
     assert (await _create(client, candidate_auth, session_payload)).status_code == 201
     second = await _create(client, candidate_auth, session_payload)
     assert second.status_code == 409
@@ -21,6 +23,7 @@ async def test_student_cannot_create_second_session(
 async def test_student_in_a_lobby_cannot_join_another(
     client: AsyncClient, candidate_auth: dict, second_candidate: dict, session_payload: dict
 ):
+    """A seated student cannot join a second lobby."""
     first = (await _create(client, candidate_auth, session_payload)).json()
     other = (await _create(client, second_candidate, session_payload)).json()
     # second_candidate is seated in `other`, so joining `first` must fail ...
@@ -39,6 +42,7 @@ async def test_student_in_a_lobby_cannot_join_another(
 async def test_lobby_list_shows_open_lobbies(
     client: AsyncClient, candidate_auth: dict, second_candidate: dict, session_payload: dict
 ):
+    """The lobby list shows open lobbies with their occupancy and topic."""
     made = (await _create(client, candidate_auth, session_payload)).json()
     listed = await client.get("/api/v1/lobbies", headers=second_candidate)
     assert listed.status_code == 200
@@ -47,6 +51,7 @@ async def test_lobby_list_shows_open_lobbies(
 
 
 async def test_turns_track_interruptions_and_replies(session_factory):
+    """Overlapping and adjacent speech is recorded as interruptions and replies."""
     from uuid import uuid4
 
     gd = GDSession(id=uuid4(), code="TRK123", host_id=uuid4(), topic="a topic", state="LIVE")

@@ -1,5 +1,29 @@
 """How the AI panel behaves as a panel: stances, a moderator, turn-taking, rules.
 
+Purpose:     Holds every decision the AI panel makes during practice: what
+             stance and angle each persona takes, who moderates, who speaks next
+             (a bidding system), how a persona's prompt is built, whether a line
+             repeats an earlier point, and the guarantee that a persona admits
+             being an AI when asked.
+Why needed:  Keeping these as pure functions (no I/O) means each rule can be unit
+             tested on its own, while the engine only runs the conversation loop.
+             Without this module the personas would agree politely, talk in
+             circles, and could claim to be human or invent statistics.
+Contains:
+  - Constants: `STUDENT`, `STANCES`, `ANGLES`, `RULES`, thresholds
+    (`REDIRECT_AFTER_SECONDS`, `DOMINANT_SHARE`, `MAX_REDIRECTS`,
+    `YIELDS_BEFORE_CURVEBALL`), and the stop-word list / "are you an AI?" regexes.
+  - `sample_stances`, `sample_angles`   give each persona a distinct view.
+  - `pick_moderator`                    choose who also runs the room.
+  - `stance_text`, `angle_text`, `cue_text`, `persona_system`  build the prompt.
+  - `content_words`, `repeats`          detect a restated point.
+  - `bid`, `choose_next`                the floor-bidding turn-taking.
+  - `should_redirect`, `quietest`       stop the student hogging the floor.
+  - `asked_if_ai`, `ensure_honest`      the deterministic honesty guard.
+Used by:     practice/engine.py (the conversation loop), practice/personas.py,
+             services/simulation.py, tests/test_panel.py.
+Depends on:  nothing in this project (standard library only).
+
 The practice engine owns the conversation loop; this module owns the decisions
 inside it, as pure functions with no I/O, so each one is testable on its own:
 
@@ -23,13 +47,16 @@ inside it, as pure functions with no I/O, so each one is testable on its own:
 
 from __future__ import annotations
 
-import random
-import re
-from collections.abc import Mapping
+import random  # shuffle stances/angles; jitter bids
+import re  # word extraction and "are you an AI?" detection
+from collections.abc import Mapping  # read-only dict-like persona/floor inputs
 
+# The student's transcript label in practice mode (personas are P1, P2, ...).
 STUDENT = "A"
 
+# The positions a persona can take on the topic.
 STANCES = ("support", "oppose", "it depends")
+# Prompt wording for each stance.
 _STANCE_TEXT = {
     "support": "You broadly SUPPORT the motion.",
     "oppose": "You broadly OPPOSE the motion.",
@@ -60,6 +87,7 @@ RULES = (
     "- Do not repeat a point someone has already made. If you agree, add what is new."
 )
 
+# Words in a persona brief that mark it as a natural moderator.
 _MODERATOR_HINTS = ("moderat", "summaris", "summariz", "bridges", "invites quieter")
 
 #: Seconds of talk before floor shares mean anything.
@@ -71,6 +99,7 @@ MAX_REDIRECTS = 2
 #: Repetitions in a row before the moderator throws in a curveball (EC-14.4).
 YIELDS_BEFORE_CURVEBALL = 3
 
+# Common words ignored when deciding whether two lines say the same thing.
 _STOPWORDS = frozenset(
     """a an the and or but if so to of in on at for with by from as is are was were be
     been being it its this that these those i you he she we they me him her us them my
@@ -81,11 +110,13 @@ _STOPWORDS = frozenset(
     people thing things lot way something because even still much many""".split()
 )
 
+# "Are you a bot / AI / human / real person?" in its common phrasings.
 _ASKED_IF_AI = re.compile(
     r"\b(are|r)\s+(you|u)\s+(an?\s+)?(bot|robot|ai|a\.i\.?|chatbot|human|real(\s+person)?|"
     r"machine|computer|program)\b",
     re.IGNORECASE,
 )
+# A reply that already admits being an AI.
 _ADMITS_AI = re.compile(r"\b(ai|a\.i\.|artificial|bot|not (a )?human)\b", re.IGNORECASE)
 
 
@@ -100,8 +131,10 @@ def sample_stances(count: int, rng: random.Random) -> list[str]:
     """
     if count <= 0:
         return []
+    # Shuffle the three distinct stances so who gets which one varies each session.
     picked = list(STANCES)
     rng.shuffle(picked)
+    # More personas than stances: top up with random repeats.
     while len(picked) < count:
         picked.append(rng.choice(STANCES))
     return picked[:count]
@@ -109,8 +142,10 @@ def sample_stances(count: int, rng: random.Random) -> list[str]:
 
 def sample_angles(count: int, rng: random.Random) -> list[str]:
     """One private angle per persona, no two the same."""
+    # Shuffle the angle names; each persona then takes the next unused one.
     names = [name for name, _ in ANGLES]
     rng.shuffle(names)
+    # Only if there are more personas than angles do angles repeat.
     while len(names) < count:
         names.append(rng.choice([name for name, _ in ANGLES]))
     return names[:count]
@@ -120,8 +155,10 @@ def pick_moderator(personas: Mapping[str, Mapping]) -> str | None:
     """The persona who also runs the room: a natural moderator, else the first."""
     for label, persona in personas.items():
         brief = str(persona.get("persona", "")).lower()
+        # An explicit moderator role, or a brief that reads like a moderator's, wins.
         if persona.get("role") == "moderator" or any(h in brief for h in _MODERATOR_HINTS):
             return label
+    # Nobody fits: default to the first persona (None if the panel is empty).
     return next(iter(personas), None)
 
 
@@ -129,10 +166,13 @@ def pick_moderator(personas: Mapping[str, Mapping]) -> str | None:
 
 
 def stance_text(stance: str | None) -> str:
+    """Prompt sentence for a stance ("" if none)."""
     return _STANCE_TEXT.get(stance or "", "")
 
 
 def angle_text(angle: str | None) -> str:
+    """Prompt text "name — description" for an angle ("" if unknown)."""
+    # Look the angle up by name and render "name — description".
     for name, description in ANGLES:
         if name == angle:
             return f"{name} — {description}"
@@ -145,7 +185,9 @@ def cue_text(
     """The instruction for one special turn. `named`: the student has a name to say."""
     if not cue:
         return ""
+    # If we don't know the student's name, don't ask the persona to say it.
     by_name = " by name" if named else ""
+    # One instruction per special turn: open, invite, hand, redirect, curveball, close, fresh.
     if cue == "open":
         return (
             "YOUR TASK NOW: you are opening the discussion. In one or two sentences, put the "
@@ -209,12 +251,14 @@ def persona_system(
     in 5; the turn-specific instruction is what makes the model say it, and
     `ensure_honest` stays behind it as the guarantee.
     """
+    # Build the prompt as a list of paragraphs: identity, topic, character first...
     parts = [
         f"You are {persona['name']}, taking part in a live spoken group discussion with "
         f"{student} (a student practising) and {others or 'nobody else'}.",
         f"Topic: {topic}",
         f"Your persona:\n{persona['persona']}",
     ]
+    # ...then the view this persona holds and the lens it keeps returning to.
     if stance := stance_text(persona.get("stance")):
         parts.append(
             f"Your stance: {stance} Hold it unless you are genuinely persuaded; concede a "
@@ -222,17 +266,20 @@ def persona_system(
         )
     if angle := angle_text(persona.get("angle")):
         parts.append(f"Your angle, the thing you know most about and come back to: {angle}.")
+    # The moderator keeps the room fair on top of taking part.
     if is_moderator:
         parts.append(
             "You also keep this discussion fair: you open it, make sure everyone — "
             f"{student} above all — gets their turn, and close it. Between those moments you "
             "take part like anyone else."
         )
+    # Stops personas inventing a name for an anonymous student.
     if not named:
         parts.append(
             "You do not know the student's name. When you address them, say 'you'; never "
             "call them by a name you make up, and never mistake them for one of the panel."
         )
+    # The honesty rules, then how to sound spoken (short, natural, within the word cap).
     parts.append(RULES)
     parts.append(
         "Speak the way people really talk, because your words are read out loud: short "
@@ -242,6 +289,7 @@ def persona_system(
         "open with a clear point of view. Stay aware of the clock: you may mention time "
         "naturally (for example 'we are running short') but never contradict it."
     )
+    # Time awareness (from timing.py), then any turn-specific instruction.
     parts.append(clock_guidance)
     if asked_ai:
         parts.append(
@@ -253,6 +301,7 @@ def persona_system(
         cue, student=student, target=target, repeated=repeated, named=named
     ):
         parts.append(instruction)
+    # Last, the exact JSON shape the engine expects back.
     parts.append(
         'Return JSON: {"speak": <bool>, "is_conclusion": <bool>, "text": "<what you say next>"}.'
     )
@@ -263,6 +312,7 @@ def persona_system(
 
 
 def content_words(text: str) -> set[str]:
+    """The meaningful lowercase words of a line (no stopwords, 3+ letters)."""
     return {
         word
         for word in re.findall(r"[a-z][a-z']+", text.lower())
@@ -273,8 +323,11 @@ def content_words(text: str) -> set[str]:
 def repeats(text: str, earlier: list[str], *, min_shared: int = 5, share: float = 0.6) -> str:
     """The earlier line this one restates, or "" if it says something new."""
     words = content_words(text)
+    # Too short to judge meaningfully: never call it a repeat.
     if len(words) < min_shared:
         return ""
+    # Compare against recent lines (newest first); a repeat shares enough of the
+    # smaller line's meaningful words.
     for line in reversed(earlier):
         other = content_words(line)
         common = words & other
@@ -327,11 +380,14 @@ def choose_next(
     rng: random.Random,
 ) -> str | None:
     """The persona with the highest bid; never the one who just spoke."""
+    # Candidates for the next turn: everyone except the last speaker (unless alone).
     pool = [label for label in personas if label != last_speaker] or list(personas)
     if not pool:
         return None
+    # `total` turns raw talk-time into shares; `last_stance` lets disagreement draw a reply.
     total = sum(floor.values()) or 1.0
     last_stance = personas.get(last_speaker or "", {}).get("stance")
+    # Each candidate bids; the loudest bid gets the floor.
     bids = {
         label: bid(
             personas[label],
@@ -351,8 +407,10 @@ def choose_next(
 def should_redirect(floor: Mapping[str, float], redirects: int) -> bool:
     """EC-14.2: the student holds most of the talk; hand the floor on, at most twice."""
     total = sum(floor.values())
+    # Already redirected twice, or not enough talk yet for shares to mean anything.
     if redirects >= MAX_REDIRECTS or total < REDIRECT_AFTER_SECONDS:
         return False
+    # Redirect only if the student has more than DOMINANT_SHARE of all talk.
     return floor.get(STUDENT, 0.0) / total > DOMINANT_SHARE
 
 
@@ -366,6 +424,7 @@ def quietest(personas: Mapping[str, Mapping], floor: Mapping[str, float], exclud
 
 
 def asked_if_ai(text: str) -> bool:
+    """True if the text asks whether the speaker is an AI / bot / human."""
     return bool(_ASKED_IF_AI.search(text))
 
 
@@ -374,6 +433,7 @@ def ensure_honest(reply: str, question: str) -> str:
 
     The rule in the prompt does the work; this guarantees it when a model forgets.
     """
+    # Asked "are you an AI?" but the reply doesn't say so: prepend the admission.
     if asked_if_ai(question) and not _ADMITS_AI.search(reply):
         return f"I'm an AI participant, to be clear. {reply}".strip()
     return reply

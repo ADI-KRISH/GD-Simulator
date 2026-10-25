@@ -1,5 +1,22 @@
 """Group report agent: writes the narrative for the whole discussion.
 
+Purpose:     After every candidate is scored, asks a model to write one debrief of
+             the discussion as a whole: overview, how the floor was shared, the
+             turning point, and recommendations for the group.
+Why needed:  Per-candidate reports explain individuals; nothing else explained the
+             group dynamic (who led, who was cut off, where it turned).
+Contains:
+  - `GROUP_PROMPT_VERSION`, `SYSTEM_PROMPT`, `RESPONSE_SCHEMA`  the versioned
+        instructions and the exact JSON shape the model must return.
+  - `build_prompt`       turns scores, measured metrics, Observer notes and
+                         candidate summaries into the model's input text.
+  - `synthesise_group`   runs the model; returns {} on any failure so a missing
+                         narrative never breaks the report.
+Used by:     evaluation/service.py (after aggregation) and
+             tests/test_group_synthesis.py.
+Depends on:  common/contracts.py (`RollingState`), evaluation/aggregator.py
+             (`AggregatedScore`), llm/__init__.py (the model), metrics/engine.py.
+
 The per-candidate synthesis agent explains one person. Nothing explained the group:
 what the discussion was like, how the floor was shared, where it turned. This agent
 reads the finished results (scores, measured behaviour, the Observer's rolling state
@@ -10,13 +27,13 @@ handed the computed results as text and returns prose only. A failure costs the
 narrative and nothing else, so it never raises.
 """
 
-import logging
-from typing import Any
+import logging  # warn if the narrative call fails
+from typing import Any  # per-candidate synthesis objects
 
-from services.common.contracts import RollingState
-from services.evaluation.aggregator import AggregatedScore
-from services.llm import get_llm_provider
-from services.metrics.engine import SessionMetrics
+from services.common.contracts import RollingState  # the Observer's final state
+from services.evaluation.aggregator import AggregatedScore  # computed scores (inputs, not outputs)
+from services.llm import get_llm_provider  # model that writes the group narrative
+from services.metrics.engine import SessionMetrics  # measured participation numbers
 
 logger = logging.getLogger(__name__)
 
@@ -75,10 +92,13 @@ def build_prompt(
     state: RollingState,
     syntheses: dict[str, Any],
 ) -> str:
+    """Assemble the group-level prompt from topic, scores, metrics and per-candidate summaries."""
+    # One summary row per candidate: score, dimension scores, measured behaviour, narrative.
     rows = []
     for label, score in sorted(scores.items()):
         m = metrics.per_candidate.get(label)
         dims = ", ".join(f"{d} {v:.1f}" for d, v in score.dimensions.items())
+        # Measured numbers are quoted verbatim so the model never has to guess them.
         behaviour = (
             f"speaking {m.speaking_seconds:.0f}s ({m.participation_ratio * 100:.0f}% of floor), "
             f"{m.turns} turns, {m.interruptions} interruptions made, {m.questions} questions"
@@ -91,6 +111,7 @@ def build_prompt(
             f"[{dims}]\n    behaviour: {behaviour}\n    candidate summary: {summary}"
         )
 
+    # Who replied to whom (top 12 interaction edges), straight from the metrics engine.
     edges = (
         "; ".join(f"{e.source}->{e.target} x{e.count}" for e in metrics.interactions[:12])
         or "none recorded"
@@ -123,9 +144,11 @@ async def synthesise_group(
     syntheses: dict[str, Any],
 ) -> dict[str, Any]:
     """Run the group report agent. Returns {} on any failure; never raises."""
+    # Nothing was scored, so there is nothing to summarise.
     if not scores:
         return {}
     try:
+        # One structured call; the model only returns prose, never numbers.
         result = await get_llm_provider().complete_json(
             system=SYSTEM_PROMPT,
             prompt=build_prompt(topic, scores, names, metrics, state, syntheses),
@@ -133,9 +156,11 @@ async def synthesise_group(
             max_tokens=1200,
         )
     except Exception as exc:
+        # The narrative is optional: log and return empty rather than fail the report.
         logger.warning("group report agent failed", extra={"error": str(exc)})
         return {}
     data = result.data
+    # Coerce every field to plain strings and record model + prompt version for provenance.
     return {
         "overview": str(data.get("overview", "")),
         "group_dynamics": str(data.get("group_dynamics", "")),

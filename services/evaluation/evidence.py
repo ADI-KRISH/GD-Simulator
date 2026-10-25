@@ -1,5 +1,25 @@
 """Candidate evidence packets (FR-27, design §23, §49).
 
+Purpose:     Builds the two pieces of text every evaluator agent reads: the
+             shared discussion context (same for everyone) and one evidence
+             packet per candidate (their lines, their metrics, who they talked to).
+Why needed:  Agents must judge each person in the context of the group, with exact
+             quotes and measured numbers, without paying to resend the whole
+             transcript six times. This module is that selective packaging.
+Contains:
+  - `CONTEXT_TURNS`        how much surrounding dialogue to quote around a line.
+  - `SharedContext`        topic, type, arguments, group dynamics (+ `render`).
+  - `EvidencePacket`       one candidate's metrics, lines, exchanges and
+                           interaction edges (+ `render`).
+  - `_bullets`, `_pairs`, `_dialogue`  small text formatters for the prompt.
+  - `build_shared_context` assembles the shared part from the Observer's state.
+  - `_exchanges_for`       quotes windows of dialogue around a candidate's lines.
+  - `build_packet`, `build_packets`  assemble per-candidate evidence.
+Used by:     evaluation/agents/base.py, evaluation/graph.py,
+             evaluation/supervisor.py, tests/test_evaluation_batching.py.
+Depends on:  common/contracts.py (data shapes), metrics/engine.py (the measured
+             numbers), speech/chunking.py (`format_timestamp`).
+
 Design §23 is the answer to a real tension: evaluate a candidate in isolation
 and you lose the group context that makes a group discussion meaningful; give
 every agent the whole session and you pay for the same transcript six times over
@@ -17,11 +37,11 @@ design §48 requires the evaluator to see the exact exchange, not just a summary
 of it.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field  # SharedContext / EvidencePacket containers
 
 from services.common.contracts import CandidateMetrics, RollingState, TranscriptSegment
-from services.metrics.engine import SessionMetrics
-from services.speech.chunking import format_timestamp
+from services.metrics.engine import SessionMetrics  # measured numbers to include as facts
+from services.speech.chunking import format_timestamp  # mm:ss stamps for quoted lines
 
 # How much surrounding dialogue to include around a candidate's own lines. Two
 # turns either side is enough to tell whether they answered the question that
@@ -45,6 +65,7 @@ class SharedContext:
     observations: list[str] = field(default_factory=list)
 
     def render(self) -> str:
+        """The shared context as prompt text."""
         return f"""\
 TOPIC: {self.topic}
 GD TYPE: {self.gd_type}
@@ -79,6 +100,7 @@ class EvidencePacket:
     responses_received: dict[str, int] = field(default_factory=dict)
 
     def render(self) -> str:
+        """The candidate's metrics and own dialogue as prompt text."""
         m = self.metrics
         return f"""\
 CANDIDATE {self.candidate_label}
@@ -104,16 +126,22 @@ KEY EXCHANGES INVOLVING THIS CANDIDATE (with surrounding context)
 
 
 def _bullets(items: list[str]) -> str:
+    """Render items as an indented bullet list, or "(none)"."""
+    # An explicit "(none)" tells the model the section is empty, not missing.
     return "\n".join(f"  - {item}" for item in items) if items else "  (none)"
 
 
 def _pairs(counts: dict[str, int]) -> str:
+    """Render {"B": 3} as "B (3x)" joined by commas."""
     return ", ".join(f"{k} ({v}x)" for k, v in sorted(counts.items())) if counts else ""
 
 
 def _dialogue(segments: list[TranscriptSegment]) -> str:
+    """Render a candidate's own lines as timestamped dialogue."""
+    # A silent candidate is stated outright so the model can't invent contributions.
     if not segments:
         return "  (this candidate did not speak)"
+    # Chronological lines with mm:ss stamps, which the evidence must cite.
     return "\n".join(
         f"  {format_timestamp(s.start)} {s.candidate_id}: {s.text}"
         for s in sorted(segments, key=lambda s: s.start)
@@ -128,6 +156,8 @@ def build_shared_context(
     participants: list[str],
     state: RollingState,
 ) -> SharedContext:
+    """Build the context every candidate's evaluation shares (topic, type, Observer state)."""
+    # Copy the Observer's rolling-state understanding in alongside the session basics.
     return SharedContext(
         session_id=session_id,
         topic=topic,
@@ -152,13 +182,16 @@ def _exchanges_for(
     "misunderstood the point" rather than trusting a summary that says only
     "A challenged B".
     """
+    # Work on the transcript in time order; `used` tracks lines already quoted.
     ordered = sorted(segments, key=lambda s: s.start)
     windows: list[str] = []
     used: set[int] = set()
 
     for index, segment in enumerate(ordered):
+        # Only build a window around this candidate's own lines.
         if segment.candidate_id != label:
             continue
+        # Take a few turns either side (clamped to the transcript's edges).
         low = max(0, index - context_turns)
         high = min(len(ordered), index + context_turns + 1)
         # Skip a window already fully covered by a previous one — consecutive
@@ -167,6 +200,7 @@ def _exchanges_for(
         if span <= used:
             continue
         used |= span
+        # One window = the surrounding lines joined into a single quoted exchange.
         windows.append(
             " | ".join(
                 f"{format_timestamp(s.start)} {s.candidate_id}: {s.text}" for s in ordered[low:high]
@@ -179,6 +213,7 @@ def build_packet(
     label: str, segments: list[TranscriptSegment], metrics: SessionMetrics
 ) -> EvidencePacket:
     """Assemble one candidate's evidence (design §23)."""
+    # Metrics and interaction edges come from the deterministic engine, never an LLM.
     return EvidencePacket(
         candidate_label=label,
         metrics=metrics.per_candidate[label],
@@ -192,6 +227,8 @@ def build_packet(
 def build_packets(
     labels: list[str], segments: list[TranscriptSegment], metrics: SessionMetrics
 ) -> dict[str, EvidencePacket]:
+    """Build one evidence packet per candidate label."""
+    # Skip labels with no measured metrics (e.g. someone who never joined).
     return {
         label: build_packet(label, segments, metrics)
         for label in labels

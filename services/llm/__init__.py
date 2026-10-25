@@ -1,13 +1,33 @@
-"""LLM layer: one interface, swappable providers (design §54)."""
+"""LLM layer: one interface, swappable providers (design §54).
 
-import logging
+Purpose:     The public entry point of the LLM package. Picks which model backend
+             to use from settings and hands out a shared provider instance.
+Why needed:  Every agent asks `get_llm_provider()` instead of building a vendor
+             client, so switching Anthropic / OpenAI / offline stub is a `.env`
+             change with no code edits.
+Contains:
+  - `get_llm_provider`          the main model (evaluation, observer); defaults
+                                to the offline stub so a fresh clone just runs.
+  - `get_persona_llm_provider`  a smaller, faster model for practice personas,
+                                because spoken-line latency is what students feel.
+  - `set_llm_provider`          override hook for tests and the evaluation worker.
+Used by:     evaluation/agents/base.py, evaluation/synthesis.py,
+             evaluation/group_synthesis.py, observer/agent.py, practice/engine.py,
+             simulation.py and many tests (conftest.py swaps in the stub).
+Depends on:  common/config.py (settings), llm/base.py (the interface),
+             llm/stub_provider.py; the Anthropic and OpenAI providers are
+             imported lazily so an unused vendor SDK is never required.
+"""
 
-from services.common.config import settings
-from services.llm.base import LLMError, LLMProvider, LLMResult
-from services.llm.stub_provider import StubLLM
+import logging  # provider selection logs
+
+from services.common.config import settings  # llm_provider, model names
+from services.llm.base import LLMError, LLMProvider, LLMResult  # the shared interface
+from services.llm.stub_provider import StubLLM  # offline default provider
 
 logger = logging.getLogger(__name__)
 
+# Public surface: callers import from `services.llm`, never from a vendor module.
 __all__ = [
     "LLMError",
     "LLMProvider",
@@ -18,6 +38,7 @@ __all__ = [
     "set_llm_provider",
 ]
 
+# Process-wide providers, created lazily on first use.
 _provider: LLMProvider | None = None
 
 
@@ -29,8 +50,10 @@ def get_llm_provider() -> LLMProvider:
     `LLM_MODEL`) for real evaluation.
     """
     global _provider
+    # Build the provider once and reuse it for the life of the process.
     if _provider is None:
         choice = settings.llm_provider.lower()
+        # Vendor modules are imported lazily so an unused SDK is never required.
         if choice == "anthropic":
             from services.llm.anthropic_provider import AnthropicProvider
 
@@ -40,7 +63,9 @@ def get_llm_provider() -> LLMProvider:
 
             _provider = OpenAIProvider()
         else:
+            # Anything else (including "stub") means the offline deterministic model.
             _provider = StubLLM()
+        # Log the choice once so it is obvious which model a run used.
         logger.info(
             "llm provider selected",
             extra={"provider": _provider.name, "model": _provider.model},
@@ -61,8 +86,10 @@ def get_persona_llm_provider() -> LLMProvider:
     global _persona_provider
     base = get_llm_provider()
     model = settings.persona_llm_model.strip()
+    # No separate persona model configured (or stub/test provider): reuse the main one.
     if not model or base.name not in {"openai", "anthropic"} or base.model == model:
         return base
+    # (Re)build the persona provider only when it is missing or the model changed.
     if _persona_provider is None or _persona_provider.model != model:
         if base.name == "openai":
             from services.llm.openai_provider import OpenAIProvider
@@ -78,4 +105,5 @@ def get_persona_llm_provider() -> LLMProvider:
 def set_llm_provider(provider: LLMProvider | None) -> None:
     """Override the provider. Used by tests and by the evaluation worker."""
     global _provider
+    # Replacing (or clearing with None) forces the next call to use this instance.
     _provider = provider

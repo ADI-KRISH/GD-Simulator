@@ -1,5 +1,32 @@
 """Specialized evaluator agents (design §22, §24–§29, §50).
 
+Purpose:     Defines what an evaluator agent IS (a name, a dimension, a rubric)
+             and how to run one: build its prompt, call the model, and validate
+             the answer against the contract before anything else sees it.
+Why needed:  Every specialist does the same job with a different prompt, so one
+             small shared runner keeps six agents consistent. The validation gate
+             here is what stops a malformed or mis-attributed model answer from
+             silently corrupting a candidate's score.
+Contains:
+  - `BASE_SYSTEM_PROMPT`   the non-negotiable rules every evaluator follows.
+  - `EvaluatorAgent`       a frozen specialist definition, with prompt builders
+                           (`system_prompt`, `user_prompt`, `batch_user_prompt`)
+                           and response schemas pinned to the right dimension and
+                           candidate(s).
+  - `TOOL_GUIDANCE`        extra prompt text explaining the evidence-lookup tools.
+  - `_complete`            one model call, with or without tools.
+  - `_calls`               trims tool-call history for the audit trail.
+  - `AgentRun`             outcome of one agent on one candidate; failure is a
+                           value so the Supervisor can handle it.
+  - `run_agent`            run one agent on one candidate and validate the output.
+  - `parse_batch_output`   validate a one-call-per-group answer (no duplicates,
+                           no omissions, no foreign dimensions).
+  - `run_agent_batch`      run one agent once for every candidate (design §49).
+Used by:     evaluation/agents/definitions.py, evaluation/graph.py,
+             evaluation/supervisor.py and tests/test_evaluation_batching.py.
+Depends on:  common/contracts.py (schemas and validation), evaluation/evidence.py
+             (prompt inputs), llm/__init__.py and llm/base.py (the model).
+
 An agent is a name, a dimension, and a rubric — not a class hierarchy. They all
 do the same thing (read the shared context plus one candidate's evidence packet,
 emit one contract-shaped verdict), so what distinguishes them is the prompt, and
@@ -14,20 +41,20 @@ Two structural guarantees:
   (claude.md invariant 5).
 """
 
-import json
-import logging
-from dataclasses import dataclass, field
-from typing import Any
+import json  # deep-copy the schema via a JSON round trip
+import logging  # retry and failure logs
+from dataclasses import dataclass, field  # EvaluatorAgent / AgentRun containers
+from typing import Any  # JSON schema / tool types
 
-from services.common.contracts import (
+from services.common.contracts import (  # validation gate for every agent output
     ContractError,
     EvaluationOutput,
     load_schema,
     parse_agent_output,
 )
-from services.evaluation.evidence import EvidencePacket, SharedContext
-from services.llm import LLMError, get_llm_provider
-from services.llm.base import LLMResult, ToolDefinition
+from services.evaluation.evidence import EvidencePacket, SharedContext  # prompt inputs
+from services.llm import LLMError, get_llm_provider  # provider-agnostic LLM access
+from services.llm.base import LLMResult, ToolDefinition  # result type and tool description
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +98,8 @@ class EvaluatorAgent:
     metrics_led: bool = False
 
     def system_prompt(self) -> str:
+        """Base rules plus this agent's dimension, focus and rubric."""
+        # Stack the shared rules, then this specialist's own focus and rubric.
         return (
             f"{BASE_SYSTEM_PROMPT}\n\n"
             f"YOUR DIMENSION: {self.dimension}\n\n"
@@ -79,6 +108,8 @@ class EvaluatorAgent:
         )
 
     def user_prompt(self, context: SharedContext, packet: EvidencePacket) -> str:
+        """The prompt for assessing one candidate: shared context plus their evidence."""
+        # The Behavior agent is told to lean on the measured numbers.
         emphasis = (
             "\nWeight the measured behaviour heavily — it is the primary evidence "
             "for this dimension.\n"
@@ -97,10 +128,14 @@ assessment as JSON."""
 
     def response_schema(self, candidate_label: str) -> dict[str, Any]:
         """The evaluation_output contract, pinned to this agent and candidate."""
+        # Deep copy via JSON so edits here never touch the cached contract.
         schema = json.loads(json.dumps(load_schema("evaluation_output")))
+        # Strip documentation-only keys that some model APIs reject.
         schema.pop("$schema", None)
         schema.pop("$id", None)
         schema.pop("examples", None)
+        # Pin dimension and candidate to one allowed value each, so the model
+        # cannot score the wrong person or stray outside its own dimension.
         schema["properties"]["dimension"] = {"type": "string", "enum": [self.dimension]}
         schema["properties"]["candidate_id"] = {"type": "string", "enum": [candidate_label]}
         return schema
@@ -119,12 +154,14 @@ assessment as JSON."""
     def batch_user_prompt(
         self, context: SharedContext, packets: dict[str, EvidencePacket]
     ) -> str:
+        """The prompt for assessing every candidate in one call (batched path)."""
         emphasis = (
             "\nWeight the measured behaviour heavily — it is the primary evidence "
             "for this dimension.\n"
             if self.metrics_led
             else ""
         )
+        # Render every candidate's evidence in a stable (sorted) order.
         labels = sorted(packets)
         blocks = "\n\n".join(packets[label].render() for label in labels)
         return f"""\
@@ -146,15 +183,18 @@ invent a candidate who is not listed above."""
         path does, which is why `parse_batch_output` additionally checks for
         duplicates and omissions.
         """
+        # Build the per-candidate item schema the same way as the single path...
         item = json.loads(json.dumps(load_schema("evaluation_output")))
         item.pop("$schema", None)
         item.pop("$id", None)
         item.pop("examples", None)
         item["properties"]["dimension"] = {"type": "string", "enum": [self.dimension]}
+        # ...but allow any of the real candidate labels (not just one).
         item["properties"]["candidate_id"] = {
             "type": "string",
             "enum": sorted(candidate_labels),
         }
+        # Wrap it in an array of exactly one entry per candidate.
         return {
             "type": "object",
             "additionalProperties": False,
@@ -188,6 +228,7 @@ async def _complete(
     tools: list[ToolDefinition] | None,
 ) -> LLMResult:
     """One model call: tool-using when evidence tools are supplied, else plain JSON."""
+    # With tools: let the model look things up (and explain how, via TOOL_GUIDANCE).
     if tools:
         return await provider.complete_with_tools(
             system=agent.system_prompt() + TOOL_GUIDANCE,
@@ -195,6 +236,7 @@ async def _complete(
             tools=tools,
             schema=schema,
         )
+    # Without tools: a single structured call.
     return await provider.complete_json(system=agent.system_prompt(), prompt=prompt, schema=schema)
 
 
@@ -223,6 +265,7 @@ class AgentRun:
 
     @property
     def ok(self) -> bool:
+        """True if the agent produced a valid output (no failure)."""
         return self.output is not None
 
 
@@ -241,13 +284,16 @@ async def run_agent(
     provider = get_llm_provider()
     try:
         prompt = agent.user_prompt(context, packet)
+        # On a re-run, tell the agent what the reviewer objected to.
         if feedback:
             prompt += f"\n\nREVIEWER FEEDBACK on your previous answer - fix this:\n{feedback}"
         result = await _complete(
             provider, agent, prompt, agent.response_schema(packet.candidate_label), tools
         )
+        # The contract gate: raises ContractError on any malformed output.
         output = parse_agent_output(result.data)
     except (LLMError, ContractError) as exc:
+        # Failure is returned as a value so one bad agent never aborts the whole evaluation.
         logger.warning(
             "evaluator agent failed",
             extra={
@@ -279,6 +325,7 @@ async def run_agent(
             ),
         )
 
+    # Validated and correctly attributed: hand back the successful run.
     return AgentRun(
         agent=agent.name,
         dimension=agent.dimension,
@@ -300,17 +347,21 @@ def parse_batch_output(
     if not isinstance(raw, dict) or "assessments" not in raw:
         raise ContractError("batched output has no 'assessments' array")
 
+    # Validate each assessment individually against the single-candidate contract.
     outputs = [parse_agent_output(item) for item in raw["assessments"]]
     seen = [o.candidate_id for o in outputs]
 
+    # The same candidate scored twice would double-count them.
     duplicates = {label for label in seen if seen.count(label) > 1}
     if duplicates:
         raise ContractError(f"candidate assessed more than once: {', '.join(sorted(duplicates))}")
 
+    # A skipped candidate would silently lose a dimension.
     missing = set(expected) - set(seen)
     if missing:
         raise ContractError(f"no assessment for: {', '.join(sorted(missing))}")
 
+    # Every assessment must belong to this agent's own dimension.
     wrong_dimension = {o.dimension for o in outputs} - {agent.dimension}
     if wrong_dimension:
         raise ContractError(
@@ -338,6 +389,7 @@ async def run_agent_batch(
     provider = get_llm_provider()
 
     try:
+        # One call covering every candidate, then the batch-level contract checks.
         result = await _complete(
             provider,
             agent,
@@ -347,6 +399,7 @@ async def run_agent_batch(
         )
         outputs = parse_batch_output(agent, result.data, labels)
     except (LLMError, ContractError) as exc:
+        # The whole batch failed: report every candidate as failed with the same error.
         logger.warning(
             "batched evaluator agent failed",
             extra={
@@ -367,6 +420,7 @@ async def run_agent_batch(
             for label in labels
         ]
 
+    # Split the single response back into one run per candidate.
     by_label = {output.candidate_id: output for output in outputs}
     return [
         AgentRun(

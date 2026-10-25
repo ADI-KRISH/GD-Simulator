@@ -3,6 +3,27 @@
 These drive `services.session.service` directly rather than through HTTP,
 because the behaviour under test — the timer advancing, a candidate dropping
 and coming back — is about state over time, not about request handling.
+
+Purpose: Service-layer tests of the session lifecycle over time: disconnects and reconnects,
+    preparation and discussion timers, the clock promoting and ending sessions, idempotent
+    ending, speech events and evaluation guards.
+Why needed: Behaviour that unfolds over time (a candidate dropping and returning, the timer
+    advancing) is about state, not request handling, so these call services.session.service
+    directly. They protect the rule that a disconnect never ends a session and that the server
+    owns the clock.
+Contains:
+  - ready_session: fixture with two joined, ready candidates, not yet started.
+  - Disconnect tests: a drop does not end the session, reconnecting returns to ACTIVE, repeated
+    drops are counted, someone who left stays LEFT.
+  - Timer tests: preparation before discussion, advance_clock promotes STARTING to LIVE and ends
+    LIVE when time is up, the warning near the end, the timer is derived not counted.
+  - Guard tests: ending twice is idempotent, a session cannot start twice, readiness is locked
+    once live.
+  - Speech and evaluation tests: events recorded on the session clock, backwards events
+    rejected, evaluation refused for a live session.
+Used by: nothing imports it directly (run by pytest, which discovers test_*.py files)
+Depends on: services/common/errors.py, services/common/timeutil.py,
+    services/session/__init__.py, services/session/state.py
 """
 
 import uuid
@@ -24,6 +45,7 @@ async def ready_session(
 ):
     """Two joined, ready candidates. Not started."""
     session_id = uuid.UUID(gd_session["id"])
+    # Both candidates join and mark themselves ready.
     for header in (candidate_auth, second_candidate):
         await client.post("/api/v1/lobbies/join", json={"code": gd_session["code"]}, headers=header)
         await client.post(
@@ -39,19 +61,25 @@ async def ready_session(
 
 async def test_a_disconnect_does_not_end_the_session(session_factory, ready_session, events):
     """The central FR-38 requirement: the session continues."""
+    # Work directly with the service layer inside one database session.
     async with session_factory() as db:
         gd = await session_repo.get_session_by_id(db, ready_session)
+        # Start the session (preparation is zero in the fixture, so it goes LIVE).
         await session_service.start_session(db, gd)
+        # Candidate A's seat.
         participant = await session_repo.get_participant_by_label(db, gd.id, "A")
 
+        # Simulate A's connection dropping.
         await session_service.mark_disconnected(db, participant)
         await db.commit()
 
+        # A is DISCONNECTED and the drop is counted.
         assert ParticipantState(participant.state) is ParticipantState.DISCONNECTED
         assert participant.connection_drops == 1
         # The session is untouched.
         assert SessionState(gd.state) is SessionState.LIVE
 
+    # One participant.disconnected event was published.
     assert events.count("participant.disconnected") == 1
 
 
@@ -64,25 +92,30 @@ async def test_reconnecting_returns_the_participant_to_active(
         await session_service.start_session(db, gd)
         participant = await session_repo.get_participant_by_label(db, gd.id, "A")
 
+        # Drop, then come back.
         await session_service.mark_disconnected(db, participant)
         await session_service.mark_reconnected(db, participant)
         await db.commit()
 
+    # Back to ACTIVE, with one reconnect event.
     assert ParticipantState(participant.state) is ParticipantState.ACTIVE
     assert events.count("participant.reconnected") == 1
 
 
 async def test_repeated_drops_are_counted(session_factory, ready_session):
+    """Each disconnect increments the participant's drop count."""
     async with session_factory() as db:
         gd = await session_repo.get_session_by_id(db, ready_session)
         await session_service.start_session(db, gd)
         participant = await session_repo.get_participant_by_label(db, gd.id, "A")
 
+        # Drop and reconnect three times.
         for _ in range(3):
             await session_service.mark_disconnected(db, participant)
             await session_service.mark_reconnected(db, participant)
         await db.commit()
 
+    # Every drop was counted and they ended ACTIVE.
     assert participant.connection_drops == 3
     assert ParticipantState(participant.state) is ParticipantState.ACTIVE
 
@@ -94,12 +127,15 @@ async def test_a_candidate_who_left_is_not_marked_disconnected(
     async with session_factory() as db:
         gd = await session_repo.get_session_by_id(db, ready_session)
         participant = await session_repo.get_participant_by_label(db, gd.id, "A")
+        # Force A into the LEFT state, as if they had left.
         participant.state = str(ParticipantState.LEFT)
         await db.flush()
 
+        # A late socket close after leaving...
         await session_service.mark_disconnected(db, participant)
         await db.commit()
 
+    # ...must leave them LEFT.
     assert ParticipantState(participant.state) is ParticipantState.LEFT
 
 
@@ -112,9 +148,11 @@ async def test_preparation_runs_before_the_discussion(
     session_factory, client, host_auth, session_payload, candidate_auth, second_candidate
 ):
     """FR-10: prep timer, then the GD timer."""
+    # Two minutes of preparation.
     payload = session_payload | {"preparation_seconds": 120}
     created = await client.post("/api/v1/sessions", json=payload, headers=host_auth)
     session = created.json()
+    # Both candidates join and ready up.
     for header in (candidate_auth, second_candidate):
         await client.post("/api/v1/lobbies/join", json={"code": session["code"]}, headers=header)
         await client.post(
@@ -123,9 +161,11 @@ async def test_preparation_runs_before_the_discussion(
 
     async with session_factory() as db:
         gd = await session_repo.get_session_by_id(db, uuid.UUID(session["id"]))
+        # Start: the session goes to STARTING, not LIVE.
         await session_service.start_session(db, gd)
         await db.commit()
 
+        # The preparation timer: the phase is preparation with at most 120 seconds left.
         assert SessionState(gd.state) is SessionState.STARTING
         timer = session_service.timer_view(gd)
         assert timer.phase == "preparation"
@@ -138,6 +178,7 @@ async def test_the_clock_promotes_starting_to_live(session_factory, ready_sessio
     """`advance_clock` applies what the clock says should have happened."""
     async with session_factory() as db:
         gd = await session_repo.get_session_by_id(db, ready_session)
+        # Give the fixture a real preparation window.
         gd.preparation_seconds = 120
         await db.flush()
         await session_service.start_session(db, gd)
@@ -145,9 +186,11 @@ async def test_the_clock_promotes_starting_to_live(session_factory, ready_sessio
         # Rewind the start so preparation has notionally elapsed.
         gd.preparation_started_at = utcnow() - timedelta(seconds=121)
         await db.flush()
+        # The clock sees preparation is over and promotes the session to LIVE.
         await session_service.advance_clock(db, gd)
         await db.commit()
 
+    # LIVE, with a start time.
     assert SessionState(gd.state) is SessionState.LIVE
     assert gd.started_at is not None
 
@@ -159,11 +202,14 @@ async def test_the_clock_ends_the_session_when_time_runs_out(
     async with session_factory() as db:
         gd = await session_repo.get_session_by_id(db, ready_session)
         await session_service.start_session(db, gd)
+        # Rewind the start so the full duration has elapsed.
         gd.started_at = utcnow() - timedelta(seconds=gd.duration_seconds + 1)
         await db.flush()
+        # The clock ends the session.
         await session_service.advance_clock(db, gd)
         await db.commit()
 
+    # ENDED, with one session.ended event.
     assert SessionState(gd.state) is SessionState.ENDED
     assert gd.ended_at is not None
     assert events.count("session.ended") == 1
@@ -174,10 +220,13 @@ async def test_the_timer_warns_near_the_end(session_factory, ready_session):
     async with session_factory() as db:
         gd = await session_repo.get_session_by_id(db, ready_session)
         await session_service.start_session(db, gd)
+        # Rewind so only 90 seconds remain.
         gd.started_at = utcnow() - timedelta(seconds=gd.duration_seconds - 90)
         await db.flush()
+        # Within the 120 second warning threshold.
         timer = session_service.timer_view(gd)
 
+    # The discussion phase with the warning flag on.
     assert timer.phase == "discussion"
     assert timer.warning is True
     assert timer.seconds_remaining <= 120
@@ -189,10 +238,12 @@ async def test_the_timer_is_derived_not_counted(session_factory, ready_session):
     async with session_factory() as db:
         gd = await session_repo.get_session_by_id(db, ready_session)
         await session_service.start_session(db, gd)
+        # Fix a reference time and compare it with 30 seconds later.
         now = utcnow()
         first = session_service.timer_view(gd, now=now)
         later = session_service.timer_view(gd, now=now + timedelta(seconds=30))
 
+    # The remaining time shrinks by exactly 30 with no tick running.
     assert first.seconds_remaining - later.seconds_remaining == 30
 
 
@@ -201,20 +252,27 @@ async def test_ending_twice_is_idempotent(session_factory, ready_session, events
     async with session_factory() as db:
         gd = await session_repo.get_session_by_id(db, ready_session)
         await session_service.start_session(db, gd)
+        # The host ends it...
         await session_service.end_session(db, gd, reason="host_ended")
+        # ...and the timer fires too.
         await session_service.end_session(db, gd, reason="timer_elapsed")
         await db.commit()
 
+    # Ended once, with a single event.
     assert SessionState(gd.state) is SessionState.ENDED
     assert events.count("session.ended") == 1
 
 
 async def test_a_session_cannot_start_twice(session_factory, ready_session):
+    """Starting an already started session raises InvalidStateTransition."""
+    # Local import: only this test needs this error type.
     from services.common.errors import InvalidStateTransition
 
     async with session_factory() as db:
         gd = await session_repo.get_session_by_id(db, ready_session)
+        # The first start works.
         await session_service.start_session(db, gd)
+        # The second start is an illegal transition.
         with pytest.raises(InvalidStateTransition):
             await session_service.start_session(db, gd)
 
@@ -222,14 +280,18 @@ async def test_a_session_cannot_start_twice(session_factory, ready_session):
 async def test_readiness_cannot_change_once_live(
     session_factory, ready_session, client, candidate_auth
 ):
+    """Readiness can no longer change once the session is live."""
+    # Start the session so readiness gets locked.
     async with session_factory() as db:
         gd = await session_repo.get_session_by_id(db, ready_session)
         await session_service.start_session(db, gd)
         await db.commit()
 
+    # A candidate tries to un-ready.
     response = await client.post(
         f"/api/v1/lobbies/{ready_session}/ready", json={"ready": False}, headers=candidate_auth
     )
+    # Refused with a conflict.
     assert response.status_code == 409
 
 
@@ -238,11 +300,14 @@ async def test_speech_events_are_recorded_on_the_session_clock(session_factory, 
     async with session_factory() as db:
         gd = await session_repo.get_session_by_id(db, ready_session)
         await session_service.start_session(db, gd)
+        # Two speech events, A then B.
         await session_service.record_speech(db, gd, "A", 10.0, 25.0)
         await session_service.record_speech(db, gd, "B", 26.0, 30.0)
         await db.commit()
+        # Read them back in time order.
         events_rows = await session_repo.list_speech_events(db, gd.id)
 
+    # Exactly what was recorded, in order.
     assert [(e.candidate_label, e.start, e.end) for e in events_rows] == [
         ("A", 10.0, 25.0),
         ("B", 26.0, 30.0),
@@ -250,20 +315,26 @@ async def test_speech_events_are_recorded_on_the_session_clock(session_factory, 
 
 
 async def test_a_backwards_speech_event_is_rejected(session_factory, ready_session):
+    """A speech event that ends before it starts is rejected."""
+    # Local import, only needed here.
     from services.common.errors import InvalidStateTransition
 
     async with session_factory() as db:
         gd = await session_repo.get_session_by_id(db, ready_session)
         await session_service.start_session(db, gd)
+        # An event that ends before it starts is rejected.
         with pytest.raises(InvalidStateTransition):
             await session_service.record_speech(db, gd, "A", 30.0, 10.0)
 
 
 async def test_evaluation_cannot_be_requested_for_a_live_session(session_factory, ready_session):
+    """Evaluation cannot be requested while the session is still live."""
+    # Local import: only this test touches evaluation.
     from services.evaluation import service as eval_service
 
     async with session_factory() as db:
         gd = await session_repo.get_session_by_id(db, ready_session)
         await session_service.start_session(db, gd)
+        # The session is still LIVE, so the request is refused.
         with pytest.raises(ConflictError):
             await eval_service.request_evaluation(db, gd)

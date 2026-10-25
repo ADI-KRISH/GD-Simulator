@@ -1,13 +1,40 @@
-"""Request/response shapes for the session and lobby APIs."""
+"""Request/response shapes for the session and lobby APIs.
 
-import uuid
-from datetime import datetime
-from typing import Literal
+Purpose: Pydantic models that validate what the session and lobby APIs accept and shape what
+    they return.
+Why needed: Bad input (a lobby that can never start, rubric weights that do not sum to 1) is
+    rejected at the API boundary, and the response models keep the API stable even if the tables
+    change.
+Contains:
+  - RUBRIC_DIMENSIONS: the dimension names a custom rubric may weight.
+  - SessionCreate / SessionUpdate: request bodies, with validators for capacity and rubric
+    weights.
+  - ParticipantOut / SessionOut / SessionSummary: participant, full-session and list views.
+  - JoinRequest / InviteRequest / ReadyRequest: lobby actions (FR-05, FR-07).
+  - LobbyView / LobbyListItem: the lobby screen and the public lobby browser (FR-04).
+  - TimerView / TopicView: the server-authoritative clock and the delayed topic (FR-10, FR-11).
+  - MediaToken: LiveKit join credentials (FR-08).
+  - TurnOut: one tracked speaking turn.
+Used by: services/lobby/router.py, services/practice/router.py, services/session/router.py,
+    services/session/service.py, services/simulation.py
+Depends on: services/session/models.py, services/session/state.py
+"""
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
+import uuid  # id types
+from datetime import datetime  # timestamps
+from typing import Literal  # restrict mode to "group" | "solo"
 
-from services.session.models import DEFAULT_WEIGHTS, Difficulty, GDType
-from services.session.state import ParticipantState, SessionState
+from pydantic import (  # validated API models and validators
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    Field,
+    field_validator,
+    model_validator,
+)
+
+from services.session.models import DEFAULT_WEIGHTS, Difficulty, GDType  # defaults and enums
+from services.session.state import ParticipantState, SessionState  # state enums
 
 # Dimensions the rubric may weight. Mirrors the evaluation_output contract enum
 # minus critical_thinking, which folds into content when aggregating (§31).
@@ -17,24 +44,33 @@ RUBRIC_DIMENSIONS = frozenset(DEFAULT_WEIGHTS)
 class SessionCreate(BaseModel):
     """FR-03."""
 
+    # Length bounds stop empty or absurdly long topics at the API boundary.
     topic: str = Field(min_length=5, max_length=2000)
     topic_category: str = Field(default="general", max_length=100)
     gd_type: GDType = GDType.GENERAL
     difficulty: Difficulty = Difficulty.INTERMEDIATE
+    # Lobby size and timing limits; the validators below check the combinations.
     min_participants: int = Field(default=3, ge=1, le=20)
     max_participants: int = Field(default=8, ge=1, le=20)
+    # Discussion length from 1 to 120 minutes; preparation may be 0 to go live straight away.
     duration_seconds: int = Field(default=900, ge=60, le=7200)
     preparation_seconds: int = Field(default=120, ge=0, le=1800)
     video_required: bool = True
     recording_enabled: bool = False
+    # Optional custom rubric; None means use DEFAULT_WEIGHTS.
     rubric_weights: dict[str, float] | None = None
+    # group means people in a lobby; solo means one student practising against AI personas.
     mode: Literal["group", "solo"] = "group"
+    # Solo only: up to four AI participants.
     personas: list[dict] = Field(default_factory=list, max_length=4)
 
     @model_validator(mode="after")
     def check_capacity(self) -> "SessionCreate":
+        """Group sessions need >= 2 people and min cannot exceed max."""
+        # Group discussions need at least two people; solo practice is exempt.
         if self.mode == "group" and self.min_participants < 2:
             raise ValueError("a group discussion needs at least 2 participants")
+        # A lobby that can never reach its own minimum could never start.
         if self.min_participants > self.max_participants:
             raise ValueError("min_participants cannot exceed max_participants")
         return self
@@ -42,11 +78,15 @@ class SessionCreate(BaseModel):
     @field_validator("rubric_weights")
     @classmethod
     def check_weights(cls, value: dict[str, float] | None) -> dict[str, float] | None:
+        """Custom rubric weights must name exactly the known dimensions and sum to 1."""
+        # None means no custom rubric, so the default applies.
         if value is None:
             return None
+        # Reject typos and dimensions the aggregator does not know.
         unknown = set(value) - RUBRIC_DIMENSIONS
         if unknown:
             raise ValueError(f"unknown rubric dimensions: {', '.join(sorted(unknown))}")
+        # Every dimension needs a weight, otherwise the formula would silently drop it.
         missing = RUBRIC_DIMENSIONS - set(value)
         if missing:
             raise ValueError(f"missing rubric dimensions: {', '.join(sorted(missing))}")
@@ -71,6 +111,9 @@ class SessionUpdate(BaseModel):
 
 
 class ParticipantOut(BaseModel):
+    """A participant as shown in the lobby and session views."""
+
+    # Build straight from the Participant ORM object.
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
@@ -83,6 +126,8 @@ class ParticipantOut(BaseModel):
 
 
 class SessionOut(BaseModel):
+    """Full session detail including participants."""
+
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
@@ -126,6 +171,7 @@ class SessionSummary(BaseModel):
 class JoinRequest(BaseModel):
     """FR-05: join by session code."""
 
+    # Bounds match the session.code column (up to 12 characters).
     code: str = Field(min_length=4, max_length=12)
 
 
@@ -203,6 +249,8 @@ class LobbyListItem(BaseModel):
 
 
 class TurnOut(BaseModel):
+    """One tracked speaking turn, with who it interrupted or replied to."""
+
     model_config = ConfigDict(from_attributes=True)
 
     candidate_label: str

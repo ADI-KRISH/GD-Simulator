@@ -36,6 +36,7 @@ WEIGHTS = dict(DEFAULT_WEIGHTS)
 
 
 def _fixtures():
+    """Build transcript segments and metrics for three candidates."""
     spans = [
         SpeakerSpan(candidate_label="A", start=0, end=45),
         SpeakerSpan(candidate_label="B", start=46, end=70),
@@ -56,6 +57,7 @@ def _fixtures():
 
 
 async def _run(strategy: str = "per_dimension", attempt: int = 1) -> EvaluationState:
+    """Run the evaluation graph with the given strategy on the fixtures."""
     segments, metrics = _fixtures()
     return await run_graph(
         session_id=SESSION,
@@ -111,6 +113,7 @@ def test_aggregate_is_a_node_not_an_agent():
 
 
 async def test_a_graph_run_scores_every_candidate():
+    """A graph run produces a 0-100 score per candidate with no failures."""
     set_llm_provider(StubLLM())
     final = await _run()
 
@@ -134,6 +137,7 @@ async def test_the_fan_out_makes_one_branch_per_specialist(monkeypatch):
 
 
 async def test_the_per_candidate_strategy_fans_out_wider(monkeypatch):
+    """The per-candidate strategy makes agents x candidates evaluator calls."""
     monkeypatch.setattr(graph_module.settings, "evaluation_agentic", False)
     llm = StubLLM()
     set_llm_provider(llm)
@@ -155,6 +159,7 @@ async def test_the_score_is_recomputable_from_the_graphs_own_outputs():
 
 
 async def test_synthesis_runs_once_per_candidate():
+    """Narrative synthesis runs once for each candidate."""
     set_llm_provider(StubLLM())
     final = await _run()
 
@@ -186,10 +191,12 @@ async def test_a_dead_specialist_is_isolated_to_its_branch():
     """A failing node must not abort the sibling branches (NFR-04)."""
 
     class OneDown:
+        """Fake model whose 'behavior' specialist is down."""
         name = "one-down"
         model = "test"
 
         async def complete_json(self, *, system, prompt, schema, max_tokens=None):
+            """Fail for the behavior agent; delegate the rest to the stub."""
             if "YOUR DIMENSION: behavior" in system:
                 raise LLMError("this specialist is down")
             return await StubLLM().complete_json(
@@ -197,6 +204,7 @@ async def test_a_dead_specialist_is_isolated_to_its_branch():
             )
 
         async def complete_with_tools(self, **kwargs):
+            """Fail for the behavior agent; delegate the rest to the stub."""
             if "YOUR DIMENSION: behavior" in kwargs["system"]:
                 raise LLMError("this specialist is down")
             return await StubLLM().complete_with_tools(**kwargs)

@@ -8,6 +8,7 @@ from services.metrics.engine import SessionMetrics
 
 
 def _metrics() -> SessionMetrics:
+    """Sample session metrics for one candidate."""
     return SessionMetrics(
         session_id="s1",
         per_candidate={
@@ -33,6 +34,7 @@ def _metrics() -> SessionMetrics:
 
 
 def _scores() -> dict[str, AggregatedScore]:
+    """Sample computed scores for one candidate."""
     return {
         "A": AggregatedScore(
             candidate_label="A",
@@ -46,6 +48,7 @@ def _scores() -> dict[str, AggregatedScore]:
 
 
 def test_the_prompt_carries_the_measured_facts_the_agent_may_quote():
+    """The group prompt includes the score and measured facts the agent may quote."""
     prompt = build_prompt(
         "Remote work", _scores(), {"A": "Arjun"}, _metrics(), RollingState.empty("s1"), {}
     )
@@ -55,6 +58,7 @@ def test_the_prompt_carries_the_measured_facts_the_agent_may_quote():
 
 
 async def test_the_group_agent_returns_a_narrative():
+    """The group agent returns a narrative."""
     set_llm_provider(StubLLM())
     try:
         narrative = await synthesise_group(
@@ -72,6 +76,7 @@ async def test_the_group_agent_returns_a_narrative():
 
 
 async def test_a_failing_model_costs_only_the_narrative():
+    """A failing model loses only the narrative, not the scores."""
     set_llm_provider(StubLLM(fail=True))
     try:
         narrative = await synthesise_group(
@@ -88,4 +93,5 @@ async def test_a_failing_model_costs_only_the_narrative():
 
 
 async def test_no_scores_means_no_call():
+    """With no scores no model call is made."""
     assert (await synthesise_group("t", {}, {}, _metrics(), RollingState.empty("s1"), {})) == {}

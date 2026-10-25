@@ -3,13 +3,27 @@
 Revision ID: 0003_speech_and_evaluation
 Revises: 0002_session_slice
 Create Date: 2026-08-20
+
+Purpose:    third revision: storage for everything the speech and AI pipelines
+            produce, from transcript text to the final report.
+Why needed: the transcript is the source of truth (claude.md invariant 2) and
+            evaluation jobs must be idempotent and reproducible, which these
+            tables and their unique constraints enforce.
+Contains:
+    upgrade   - creates `transcript_segments`, `audio_chunks`, `rolling_states`,
+                `evaluation_jobs`, `agent_outputs`, `candidate_scores`, `reports`.
+    downgrade - drops them again, last-created first.
+Used by:    Alembic (`alembic upgrade head`).
+Depends on: 0002_session_slice and 0001_auth_slice (foreign keys). Mirrors
+            speech/models.py and evaluation/models.py.
 """
 
-from collections.abc import Sequence
+from collections.abc import Sequence  # type of the optional Alembic revision links
 
-import sqlalchemy as sa
-from alembic import op
+import sqlalchemy as sa  # column and constraint types
+from alembic import op  # migration operations (create_table, add_column, ...)
 
+# Alembic revision identifiers: this revision, its parent, and optional branch info.
 revision: str = "0003_speech_and_evaluation"
 down_revision: str | None = "0002_session_slice"
 branch_labels: str | Sequence[str] | None = None
@@ -17,6 +31,8 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    """Apply this revision: create the tables/columns described in the module docstring."""
+    # transcript_segments: each piece of transcribed speech, saved the moment it exists.
     op.create_table(
         "transcript_segments",
         sa.Column("id", sa.Uuid(), primary_key=True, nullable=False),
@@ -42,6 +58,8 @@ def upgrade() -> None:
     )
     op.create_index("ix_transcript_segments_chunk_index", "transcript_segments", ["chunk_index"])
 
+    # audio_chunks: bookkeeping for each uploaded audio window, so failed
+    # transcriptions can be retried from the stored original (status/attempts).
     op.create_table(
         "audio_chunks",
         sa.Column("id", sa.Uuid(), primary_key=True, nullable=False),
@@ -69,6 +87,7 @@ def upgrade() -> None:
     op.create_index("ix_audio_chunks_session_id", "audio_chunks", ["session_id"])
     op.create_index("ix_audio_chunks_status", "audio_chunks", ["status"])
 
+    # rolling_states: the Observer's compressed understanding after each chunk (never scores).
     op.create_table(
         "rolling_states",
         sa.Column("id", sa.Uuid(), primary_key=True, nullable=False),
@@ -87,6 +106,8 @@ def upgrade() -> None:
     )
     op.create_index("ix_rolling_states_session_id", "rolling_states", ["session_id"])
 
+    # evaluation_jobs: one queued evaluation per session+version, with the rubric and
+    # prompt/agent versions recorded so any score can be reproduced.
     op.create_table(
         "evaluation_jobs",
         sa.Column("id", sa.Uuid(), primary_key=True, nullable=False),
@@ -117,6 +138,7 @@ def upgrade() -> None:
     op.create_index("ix_evaluation_jobs_session_id", "evaluation_jobs", ["session_id"])
     op.create_index("ix_evaluation_jobs_state", "evaluation_jobs", ["state"])
 
+    # agent_outputs: one specialist agent's score and evidence for one candidate+dimension.
     op.create_table(
         "agent_outputs",
         sa.Column("id", sa.Uuid(), primary_key=True, nullable=False),
@@ -144,6 +166,7 @@ def upgrade() -> None:
     op.create_index("ix_agent_outputs_job_id", "agent_outputs", ["job_id"])
     op.create_index("ix_agent_outputs_candidate_label", "agent_outputs", ["candidate_label"])
 
+    # candidate_scores: the aggregator's final weighted score per candidate (computed in code).
     op.create_table(
         "candidate_scores",
         sa.Column("id", sa.Uuid(), primary_key=True, nullable=False),
@@ -171,6 +194,7 @@ def upgrade() -> None:
     op.create_index("ix_candidate_scores_job_id", "candidate_scores", ["job_id"])
     op.create_index("ix_candidate_scores_user_id", "candidate_scores", ["user_id"])
 
+    # reports: the finished narrative report as JSON (per candidate, plus a group one).
     op.create_table(
         "reports",
         sa.Column("id", sa.Uuid(), primary_key=True, nullable=False),
@@ -202,6 +226,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """Undo this revision (reverse order of upgrade)."""
+    # Drop the most dependent tables first (reports) down to transcript_segments.
     for index, table in (
         ("ix_reports_user_id", "reports"),
         ("ix_reports_candidate_label", "reports"),

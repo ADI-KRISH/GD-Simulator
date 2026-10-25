@@ -1,20 +1,46 @@
-"""Evaluation and report HTTP API (FR-20, FR-30 – FR-32, design §33, §34, §52)."""
+"""Evaluation and report HTTP API (FR-20, FR-30 – FR-32, design §33, §34, §52).
 
-import uuid
-from datetime import datetime
-from typing import Annotated, Any
+Purpose:     The web endpoints for evaluation: trigger or inspect an evaluation,
+             fetch scores and reports, view a user's history, and (admin only)
+             inspect the job queue.
+Why needed:  The frontend can only reach the evaluation pipeline through HTTP.
+             This router also enforces who may see what: a candidate reads only
+             their own report, the group report and all scores are host-only, and
+             queue internals are admin-only.
+Contains:
+  - `EvaluationStatus`, `ScoreOut`, `ReportOut`, `HistoryEntry`, `HistoryOut`
+        the response shapes sent to clients.
+  - `_status`                      converts a job row to `EvaluationStatus`.
+  - `request_evaluation`           POST  /sessions/{id}/evaluate (idempotent).
+  - `get_evaluation_status`        GET   /sessions/{id}/evaluation.
+  - `get_scores`                   GET   /sessions/{id}/scores (host only).
+  - `get_my_report`                GET   /sessions/{id}/report (own report).
+  - `get_group_report`             GET   /sessions/{id}/report/group (host only).
+  - `get_candidate_report`         GET   /sessions/{id}/report/{label}.
+  - `get_my_history`               GET   /me/history (trend across sessions).
+  - `get_queue_depth`              GET   /evaluation/queue (admin only).
+Used by:     main.py (mounts the router on the FastAPI app).
+Depends on:  auth/deps.py and auth/models.py (current user, DB session, roles),
+             common/errors.py, evaluation/queue.py, evaluation/service.py,
+             evaluation/repository.py, evaluation/models.py,
+             session/service.py (access checks) and session/state.py.
+"""
 
-from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel, Field
+import uuid  # session id path parameter
+from datetime import datetime  # timestamps in responses
+from typing import Annotated, Any  # Depends/Query metadata; free-form report bodies
 
-from services.auth.deps import CurrentUser, SessionDep, require_role
-from services.auth.models import Role
-from services.common.errors import NotFoundError, PermissionDeniedError
-from services.evaluation import queue, service
-from services.evaluation import repository as repo
-from services.evaluation.models import EvaluationJob as EvaluationJobRow
-from services.session import service as session_service
-from services.session.state import EvaluationState
+from fastapi import APIRouter, Depends, Query  # routing, dependencies, query params
+from pydantic import BaseModel, Field  # response models
+
+from services.auth.deps import CurrentUser, SessionDep, require_role  # user, DB session, RBAC
+from services.auth.models import Role  # ADMIN role for queue inspection
+from services.common.errors import NotFoundError, PermissionDeniedError  # 404 / 403
+from services.evaluation import queue, service  # job queue and evaluation orchestration
+from services.evaluation import repository as repo  # job/score/report data access
+from services.evaluation.models import EvaluationJob as EvaluationJobRow  # job table row
+from services.session import service as session_service  # access checks
+from services.session.state import EvaluationState  # job state enum
 
 router = APIRouter(prefix="/api/v1", tags=["evaluation"])
 
@@ -22,6 +48,8 @@ AdminOnly = Annotated[object, Depends(require_role(Role.ADMIN))]
 
 
 class EvaluationStatus(BaseModel):
+    """Where an evaluation job is and which versions/rubric produced it."""
+
     # The job's primary key is `id` on the row; it is `job_id` on the wire so a
     # client holding several ids at once cannot confuse it with a session id.
     job_id: uuid.UUID
@@ -62,6 +90,8 @@ def _status(job: EvaluationJobRow) -> EvaluationStatus:
 
 
 class ScoreOut(BaseModel):
+    """A candidate's final score with its per-dimension breakdown."""
+
     candidate_label: str
     overall: float
     dimensions: dict[str, float]
@@ -71,6 +101,8 @@ class ScoreOut(BaseModel):
 
 
 class ReportOut(BaseModel):
+    """A stored report (candidate or group) as returned to clients."""
+
     session_id: uuid.UUID
     candidate_label: str | None
     body: dict[str, Any]
@@ -88,6 +120,8 @@ class HistoryEntry(BaseModel):
 
 
 class HistoryOut(BaseModel):
+    """A user's history: counts, average, per-dimension trend and each session's entry."""
+
     sessions_completed: int
     average_overall: float | None
     trend: dict[str, float] = Field(default_factory=dict)
@@ -112,9 +146,12 @@ async def request_evaluation(
     returned as-is rather than re-run. Without that, whichever lost the race
     would fail on `COMPLETED → PREPARING`.
     """
+    # Only the session's host may trigger an evaluation.
     gd = await session_service.require_session(db, session_id)
     session_service.require_host(gd, user)
+    # Create the job (or return the existing one for this version).
     job = await service.request_evaluation(db, gd)
+    # run_now: do the work in this request instead of waiting for the worker.
     if run_now and EvaluationState(job.state) is not EvaluationState.COMPLETED:
         job = await service.run_job(db, job)
     return _status(job)
@@ -124,7 +161,9 @@ async def request_evaluation(
 async def get_evaluation_status(
     session_id: uuid.UUID, db: SessionDep, user: CurrentUser
 ) -> EvaluationStatus:
+    """Status of the session's latest evaluation job (host or participants only)."""
     gd = await session_service.require_session(db, session_id)
+    # The host passes; anyone else must be a participant in this session.
     if gd.host_id != user.id:
         await session_service.require_participant(db, session_id, user)
     job = await repo.latest_job(db, session_id)
@@ -141,6 +180,7 @@ async def get_scores(session_id: uuid.UUID, db: SessionDep, user: CurrentUser) -
     job = await repo.latest_job(db, session_id)
     if job is None:
         raise NotFoundError("this session has not been evaluated")
+    # Map each stored score row to the public response shape.
     return [
         ScoreOut(
             candidate_label=s.candidate_label,
@@ -157,6 +197,8 @@ async def get_scores(session_id: uuid.UUID, db: SessionDep, user: CurrentUser) -
 @router.get("/sessions/{session_id}/report", response_model=ReportOut)
 async def get_my_report(session_id: uuid.UUID, db: SessionDep, user: CurrentUser) -> ReportOut:
     """FR-30. A candidate's own report (NFR-07: they see only theirs)."""
+    # The candidate label comes from the caller's own participation record, so
+    # there is no way to ask for someone else's report here.
     participant = await session_service.require_participant(db, session_id, user)
     report = await repo.get_candidate_report(db, session_id, participant.candidate_label)
     if report is None:
@@ -191,6 +233,7 @@ async def get_candidate_report(
 ) -> ReportOut:
     """A specific candidate's report. Host, admin, or that candidate."""
     gd = await session_service.require_session(db, session_id)
+    # Host and admin may read any report; everyone else only their own label.
     if gd.host_id != user.id and user.role != Role.ADMIN.value:
         participant = await session_service.require_participant(db, session_id, user)
         if participant.candidate_label != candidate_label:
@@ -211,6 +254,7 @@ async def get_my_history(db: SessionDep, user: CurrentUser) -> HistoryOut:
     """FR-31. Performance across every GD this candidate has completed."""
     scores = await repo.list_scores_for_user(db, user.id)
     entries: list[HistoryEntry] = []
+    # Attach each score to its session (for the topic); skip orphaned scores.
     for score in scores:
         job = await repo.get_job(db, score.job_id)
         if job is None:
@@ -226,6 +270,7 @@ async def get_my_history(db: SessionDep, user: CurrentUser) -> HistoryOut:
             )
         )
 
+    # Mean overall score across all of the user's sessions.
     average = round(sum(e.overall for e in entries) / len(entries), 2) if entries else None
     # Per-dimension averages, so weakness detection has something to work with
     # (design §53 personalization inputs).
@@ -245,4 +290,5 @@ async def get_my_history(db: SessionDep, user: CurrentUser) -> HistoryOut:
 @router.get("/evaluation/queue", response_model=dict)
 async def get_queue_depth(db: SessionDep, user: CurrentUser, _: AdminOnly) -> dict:
     """Design §41: queue depth and dead-letter size."""
+    # Admin-only operational view: queue size plus the 10 most recent failed jobs.
     return {"queue": await queue.depth(), "dead_letters": await queue.dead_letters(limit=10)}

@@ -1,5 +1,30 @@
 """The Supervisor Agent (FR-21, design §20, §21, §22).
 
+Purpose:     Orchestrates one evaluation pass: picks the specialists for this
+             discussion, builds the shared context and evidence packets, runs the
+             specialists concurrently, then sorts their results into usable
+             outputs, failures and score conflicts.
+Why needed:  Someone has to coordinate the specialists, isolate failures so one
+             bad model call can't sink the whole job, and hand clean, validated
+             evidence to the deterministic aggregator. The Supervisor does that
+             and deliberately never scores anything itself.
+Contains:
+  - `MAX_CONCURRENT_AGENT_CALLS`  cap on in-flight model calls (rate limits).
+  - `STRATEGY_PER_DIMENSION`, `STRATEGY_PER_CANDIDATE`  the two dispatch modes.
+  - `SupervisorPlan`        steps 1-4 result (agents, context, packets) with
+                            `call_count` to predict cost.
+  - `EvaluationPlanResult`  steps 5-8 result (runs, outputs, failures, conflicts).
+  - `plan`                  design §21 steps 1-4.
+  - `dispatch`              steps 5-6: run specialists concurrently.
+  - `resolve`               step 7: separate good runs from failures and flag
+                            large disagreements between agents.
+  - `run`                   the whole pass, plan -> dispatch -> resolve.
+Used by:     evaluation/graph.py (uses `resolve`, `STRATEGY_PER_DIMENSION`),
+             evaluation/service.py, tests/test_evaluation_batching.py and
+             tests/test_evaluation_pipeline.py.
+Depends on:  common/config.py, common/contracts.py, evaluation/agents/base.py,
+             agents/definitions.py, evaluation/evidence.py, metrics/engine.py.
+
 Design §21 lists eight responsibilities, and the Supervisor here does all eight
 and nothing more:
 
@@ -22,26 +47,26 @@ a dependency that adds a DSL over `asyncio.gather` would obscure that rather
 than clarify it. The decision is recorded in claude.md's TODO list.
 """
 
-import asyncio
-import logging
-from dataclasses import dataclass, field
+import asyncio  # run agents concurrently under a semaphore
+import logging  # dispatch logs
+from dataclasses import dataclass, field  # plan/result containers
 
-from services.common.config import settings
+from services.common.config import settings  # evaluation strategy and concurrency
 from services.common.contracts import EvaluationOutput, RollingState, TranscriptSegment
-from services.evaluation.agents.base import (
+from services.evaluation.agents.base import (  # specialist runner
     AgentRun,
     EvaluatorAgent,
     run_agent,
     run_agent_batch,
 )
-from services.evaluation.agents.definitions import select_agents
-from services.evaluation.evidence import (
+from services.evaluation.agents.definitions import select_agents  # choose agents by GD type
+from services.evaluation.evidence import (  # prompt inputs
     EvidencePacket,
     SharedContext,
     build_packets,
     build_shared_context,
 )
-from services.metrics.engine import SessionMetrics
+from services.metrics.engine import SessionMetrics  # measured numbers
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +102,7 @@ class SupervisorPlan:
 
     def call_count(self, strategy: str | None = None) -> int:
         """How many model calls this plan will make."""
+        # One call per specialist when batched; one per (specialist, candidate) otherwise.
         if (strategy or settings.evaluation_strategy) == STRATEGY_PER_DIMENSION:
             return len(self.agents)
         return len(self.agents) * len(self.packets)
@@ -104,7 +130,9 @@ def plan(
     state: RollingState,
 ) -> SupervisorPlan:
     """Design §21 steps 1–4."""
+    # Which specialists to run depends on the GD type (design §22).
     agents = select_agents(gd_type)
+    # Context shared by everyone, then one evidence packet per candidate.
     context = build_shared_context(
         session_id=session_id,
         topic=topic,
@@ -114,6 +142,7 @@ def plan(
         state=state,
     )
     packets = build_packets(candidates, segments, metrics)
+    # Log the plan, including how many model calls it will cost.
     logger.info(
         "supervisor planned evaluation",
         extra={
@@ -140,21 +169,27 @@ async def dispatch(plan: SupervisorPlan, strategy: str | None = None) -> list[Ag
     of which was used.
     """
     strategy = strategy or settings.evaluation_strategy
+    # The semaphore caps in-flight model calls so we stay under provider rate limits.
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_AGENT_CALLS)
 
+    # Batched strategy: one call per specialist covering every candidate.
     if strategy == STRATEGY_PER_DIMENSION:
 
         async def run_batch(agent: EvaluatorAgent) -> list[AgentRun]:
+            """One call covering every candidate for this specialist (per-dimension strategy)."""
             async with semaphore:
                 return await run_agent_batch(agent, plan.context, plan.packets)
 
+        # Run all specialists at once, then flatten into a single list of runs.
         batches = await asyncio.gather(*(run_batch(agent) for agent in plan.agents))
         return [run for batch in batches for run in batch]
 
     async def run_one(agent: EvaluatorAgent, packet: EvidencePacket) -> AgentRun:
+        """One call for a single (agent, candidate) pair (per-candidate strategy)."""
         async with semaphore:
             return await run_agent(agent, plan.context, packet)
 
+    # Per-candidate strategy: one task per (specialist, candidate) pair.
     tasks = [run_one(agent, packet) for packet in plan.packets.values() for agent in plan.agents]
     return list(await asyncio.gather(*tasks))
 
@@ -170,24 +205,28 @@ def resolve(plan: SupervisorPlan, runs: list[AgentRun]) -> EvaluationPlanResult:
     outputs_by_candidate: dict[str, list[EvaluationOutput]] = {label: [] for label in plan.packets}
     failures: list[AgentRun] = []
 
+    # Sort runs into usable outputs (grouped by candidate) and failures.
     for run in runs:
         if run.ok and run.output is not None:
             outputs_by_candidate.setdefault(run.candidate_label, []).append(run.output)
         else:
             failures.append(run)
 
+    # Look for two agents scoring the same dimension of the same candidate far apart.
     conflicts: list[str] = []
     for label, outputs in outputs_by_candidate.items():
         by_dimension: dict[str, list[float]] = {}
         for output in outputs:
             by_dimension.setdefault(output.dimension, []).append(output.score)
         for dimension, scores in by_dimension.items():
+            # More than 2 points apart counts as a conflict worth recording.
             if len(scores) > 1 and max(scores) - min(scores) > 2.0:
                 conflicts.append(
                     f"{label}/{dimension}: agents disagree by "
                     f"{max(scores) - min(scores):.1f} points"
                 )
 
+    # Surface failures in the logs (first 5 in detail) without raising.
     if failures:
         logger.warning(
             "some evaluator agents failed",
@@ -219,6 +258,7 @@ async def run(
     strategy: str | None = None,
 ) -> EvaluationPlanResult:
     """The whole Supervisor pass, steps 1–8."""
+    # plan -> dispatch -> resolve, in the order design §21 prescribes.
     supervisor_plan = plan(
         session_id, topic, gd_type, duration_seconds, candidates, segments, metrics, state
     )

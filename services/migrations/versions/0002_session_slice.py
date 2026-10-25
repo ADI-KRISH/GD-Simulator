@@ -3,13 +3,24 @@
 Revision ID: 0002_session_slice
 Revises: 0001_auth_slice
 Create Date: 2026-08-20
+
+Purpose:    second revision: the tables for a discussion room, who is in it and
+            when each person spoke.
+Why needed: sessions are the centre of the app; the timer, lobby, speech
+            metrics and evaluation all hang off these three tables.
+Contains:
+    upgrade   - creates `gd_sessions`, `participants`, `speech_events` plus indexes.
+    downgrade - drops them again in reverse order.
+Used by:    Alembic (`alembic upgrade head`).
+Depends on: 0001_auth_slice (foreign keys to `users`). Mirrors session/models.py.
 """
 
-from collections.abc import Sequence
+from collections.abc import Sequence  # type of the optional Alembic revision links
 
-import sqlalchemy as sa
-from alembic import op
+import sqlalchemy as sa  # column and constraint types
+from alembic import op  # migration operations (create_table, add_column, ...)
 
+# Alembic revision identifiers: this revision, its parent, and optional branch info.
 revision: str = "0002_session_slice"
 down_revision: str | None = "0001_auth_slice"
 branch_labels: str | Sequence[str] | None = None
@@ -17,6 +28,8 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    """Apply this revision: create the tables/columns described in the module docstring."""
+    # gd_sessions: one row per discussion (topic, rules, rubric, state-machine state, times).
     op.create_table(
         "gd_sessions",
         sa.Column("id", sa.Uuid(), primary_key=True, nullable=False),
@@ -57,6 +70,7 @@ def upgrade() -> None:
     # The timer ticker scans by state every second; without this it table-scans.
     op.create_index("ix_gd_sessions_state", "gd_sessions", ["state"])
 
+    # participants: who joined a session, their label (A, B, ...) and ready/connection state.
     op.create_table(
         "participants",
         sa.Column("id", sa.Uuid(), primary_key=True, nullable=False),
@@ -84,6 +98,7 @@ def upgrade() -> None:
     op.create_index("ix_participants_session_id", "participants", ["session_id"])
     op.create_index("ix_participants_user_id", "participants", ["user_id"])
 
+    # speech_events: start/end of each stretch of speaking; the input to the metrics engine.
     op.create_table(
         "speech_events",
         sa.Column("id", sa.Uuid(), primary_key=True, nullable=False),
@@ -105,6 +120,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """Undo this revision (reverse order of upgrade)."""
+    # Children first (speech_events, participants), then the parent gd_sessions.
     op.drop_index("ix_speech_events_candidate_label", table_name="speech_events")
     op.drop_index("ix_speech_events_session_id", table_name="speech_events")
     op.drop_table("speech_events")

@@ -22,10 +22,12 @@ class FakeCompletions:
     """Records each request; raises or answers from a script, in order."""
 
     def __init__(self, script):
+        """Take the scripted replies/errors to hand out in order."""
         self.script = list(script)
         self.requests: list[dict] = []
 
     async def create(self, **request):
+        """Record the request, then return or raise the next scripted step."""
         self.requests.append(request)
         step = self.script.pop(0)
         if isinstance(step, Exception):
@@ -34,11 +36,13 @@ class FakeCompletions:
 
 
 def _client(script):
+    """A fake OpenAI client plus the completions object it records into."""
     completions = FakeCompletions(script)
     return SimpleNamespace(chat=SimpleNamespace(completions=completions)), completions
 
 
 def _reply(content=None, tool_calls=None):
+    """A fake chat completion with the given content and tool calls."""
     message = SimpleNamespace(content=content, tool_calls=tool_calls, refusal=None)
     return SimpleNamespace(
         choices=[SimpleNamespace(message=message, finish_reason="stop")],
@@ -49,12 +53,14 @@ def _reply(content=None, tool_calls=None):
 
 @pytest.fixture(autouse=True)
 def restore_settings():
+    """Restore the LLM settings these tests change."""
     saved = (settings.openai_base_url, settings.llm_reasoning_effort)
     yield
     settings.openai_base_url, settings.llm_reasoning_effort = saved
 
 
 def test_only_the_reasoning_models_are_given_an_effort():
+    """Only gpt-oss models count as 'think first' models."""
     assert _thinks_first("openai/gpt-oss-120b")
     assert _thinks_first("openai/gpt-oss-20b")
     assert not _thinks_first("gpt-4o-mini")
@@ -62,6 +68,7 @@ def test_only_the_reasoning_models_are_given_an_effort():
 
 
 async def test_a_gpt_oss_request_carries_the_configured_effort():
+    """A gpt-oss request includes the configured reasoning effort."""
     settings.llm_reasoning_effort = "low"
     provider = OpenAIProvider(model="openai/gpt-oss-20b", api_key="k")
     provider._client, completions = _client([_reply('{"speak": true, "text": "hi"}')])
@@ -71,6 +78,7 @@ async def test_a_gpt_oss_request_carries_the_configured_effort():
 
 
 async def test_other_models_are_sent_no_effort():
+    """Other models get no reasoning_effort field."""
     settings.llm_reasoning_effort = "low"
     provider = OpenAIProvider(model="gpt-4o-mini", api_key="k")
     provider._client, completions = _client([_reply('{"ok": true}')])
@@ -79,6 +87,7 @@ async def test_other_models_are_sent_no_effort():
 
 
 async def test_an_empty_setting_sends_no_effort_even_to_gpt_oss():
+    """An empty effort setting sends nothing, even to gpt-oss."""
     settings.llm_reasoning_effort = ""
     provider = OpenAIProvider(model="openai/gpt-oss-120b", api_key="k")
     provider._client, completions = _client([_reply('{"ok": true}')])
@@ -87,6 +96,7 @@ async def test_an_empty_setting_sends_no_effort_even_to_gpt_oss():
 
 
 async def test_an_answer_sent_as_an_undeclared_tool_is_asked_for_again_as_content():
+    """A refused 'json' tool call is retried with tools off to get plain content."""
     settings.openai_base_url = "https://api.groq.com/openai/v1"
     provider = OpenAIProvider(model="openai/gpt-oss-120b", api_key="k")
     rejected = Exception(
@@ -103,6 +113,7 @@ async def test_an_answer_sent_as_an_undeclared_tool_is_asked_for_again_as_conten
 
 
 async def test_any_other_failure_is_still_an_error():
+    """A non tool-routing failure (e.g. 401) still raises LLMError."""
     from services.llm.base import LLMError
 
     settings.openai_base_url = "https://api.groq.com/openai/v1"
@@ -116,12 +127,14 @@ async def test_any_other_failure_is_still_an_error():
 
 
 async def test_a_dropped_connection_is_retried_not_failed(monkeypatch):
+    """A dropped connection is retried instead of failing the call."""
     import httpx
     import openai
 
     from services.llm import openai_provider
 
     async def no_wait(_seconds):
+        """Skip the real backoff sleep."""
         return None
 
     monkeypatch.setattr(openai_provider.asyncio, "sleep", no_wait)
@@ -137,6 +150,7 @@ async def test_a_dropped_connection_is_retried_not_failed(monkeypatch):
 
 
 async def test_a_verdict_with_broken_json_is_asked_for_once_more():
+    """Invalid JSON triggers exactly one follow-up asking for valid JSON."""
     settings.openai_base_url = "https://api.groq.com/openai/v1"
     provider = OpenAIProvider(model="openai/gpt-oss-120b", api_key="k")
     provider._client, completions = _client([_reply('{"score": 6 "x": 1}'), _reply('{"score": 6}')])
@@ -151,11 +165,13 @@ class Refused(Exception):
     """Groq's tool_use_failed, with the call it refused in `failed_generation`."""
 
     def __init__(self, generation: str):
+        """Build a tool_use_failed error carrying the refused generation."""
         super().__init__("Error code: 400 - {'error': {'code': 'tool_use_failed'}}")
         self.body = {"error": {"code": "tool_use_failed", "failed_generation": generation}}
 
 
 async def test_an_answer_sent_to_an_undeclared_json_tool_is_taken_as_the_answer():
+    """A refused call to an undeclared 'json' tool is used as the final answer."""
     settings.openai_base_url = "https://api.groq.com/openai/v1"
     provider = OpenAIProvider(model="openai/gpt-oss-120b", api_key="k")
     refused = Refused('{"name": "json", "arguments": {"score": 7, "evidence": ["x"]}}')
@@ -168,11 +184,13 @@ async def test_an_answer_sent_to_an_undeclared_json_tool_is_taken_as_the_answer(
 
 
 async def test_a_real_tool_the_vendor_refused_is_run_as_meant():
+    """A refused call to a real tool is still executed and its result fed back."""
     from services.llm.base import ToolDefinition
 
     ran: list[dict] = []
 
     def score_if(dimension, hypothetical_score):
+        """Fake tool that records its arguments and returns a score."""
         ran.append({"dimension": dimension, "score": hypothetical_score})
         return {"overall": 71}
 

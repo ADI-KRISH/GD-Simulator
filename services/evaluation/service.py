@@ -1,5 +1,38 @@
 """Evaluation pipeline (FR-20 – FR-30, design §18–§21, §31, §33).
 
+Purpose:     The orchestrator of a whole evaluation. It creates the durable job
+             when a session ends, then (in a worker) loads the transcript,
+             metrics and Observer state, runs the agents, stores verdicts and
+             scores, builds reports, notifies users and tells the platform.
+Why needed:  Every other evaluation module does one narrow thing (agents, the
+             aggregator, reports, the queue). This is the one place that wires
+             them together in the right order, walks the evaluation state
+             machine, and keeps a retried job from producing duplicate or
+             contradictory results (design §39).
+Contains:
+  - `ENGINE_LANGGRAPH`, `ENGINE_NATIVE`  the two interchangeable engines.
+  - `OrchestrationOutcome`   what either engine returns, so `run_job` is
+                             engine-agnostic.
+  - `eval_topic`             the topic as evaluators see it (adds practice-mode context).
+  - `_orchestrate`           run the workflow on the configured engine.
+  - `_provenance`            tool calls + critic notes saved with each verdict.
+  - `_set_job_state`         move a job through the legal state transitions.
+  - `to_contract`            job row -> the `evaluation_job` contract on the queue.
+  - `request_evaluation`     create + enqueue a job (cheap, idempotent).
+  - `run_job`                execute one job end to end (the main function).
+  - `_platform_subjects`, `_increment_sessions_completed`  post-completion bookkeeping.
+  - `fail_job`               mark a job failed (session stays retryable).
+  - `run_for_session`        run a session's job inline (admin endpoint, tests).
+  - `outputs_to_contracts`   stored verdicts -> contract objects (re-derive a score).
+  - `latest_state`           the Observer's most recent rolling state.
+Used by:     evaluation/router.py, evaluation/worker.py and several tests
+             (test_evaluation_pipeline.py, test_notifications.py,
+             test_session_lifecycle.py).
+Depends on:  nearly every evaluation module (graph, supervisor, aggregator,
+             report, synthesis, group_synthesis, queue, repository, models), plus
+             metrics, observer, speech, session, notifications, realtime,
+             auth and ai_platform for inputs and side effects.
+
 Two entry points:
 
 * `request_evaluation` — called when a session ends. Creates the durable job row
@@ -13,18 +46,18 @@ and `run_job` clears any partial output before re-running, so a redelivered
 message converges on one consistent report rather than two contradictory ones.
 """
 
-import asyncio
-import logging
-import uuid
-from dataclasses import dataclass
+import asyncio  # run work concurrently; cancellation handling
+import logging  # job lifecycle logs
+import uuid  # session/job id types
+from dataclasses import dataclass  # small result containers
 
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession  # database session
 
-from services.ai_platform import skill_graph as platform_skill_graph
-from services.ai_platform.bridge import platform_subject
-from services.auth import repository as auth_repo
-from services.common.config import settings
-from services.common.contracts import (
+from services.ai_platform import skill_graph as platform_skill_graph  # send results to M04
+from services.ai_platform.bridge import platform_subject  # map a GD account to a platform student
+from services.auth import repository as auth_repo  # load participants' user accounts
+from services.common.config import settings  # engine, versions, penalty settings
+from services.common.contracts import (  # validated data shapes
     EvaluationArtifacts,
     EvaluationOutput,
     EvaluationVersions,
@@ -34,39 +67,40 @@ from services.common.contracts import (
 from services.common.contracts import (
     EvaluationJob as EvaluationJobContract,
 )
-from services.common.errors import ConflictError, NotFoundError
-from services.common.events import Event, publish
-from services.evaluation import queue
-from services.evaluation import repository as repo
-from services.evaluation.agents.definitions import select_agents
-from services.evaluation.aggregator import aggregate_session, normalise_weights
-from services.evaluation.graph import run_graph
-from services.evaluation.group_synthesis import synthesise_group
-from services.evaluation.models import AgentOutput, CandidateScore, EvaluationJob, Report
-from services.evaluation.report import (
+from services.common.errors import ConflictError, NotFoundError  # 409 / 404
+from services.common.events import Event, publish  # announce evaluation.* events
+from services.evaluation import queue  # enqueue jobs for the worker
+from services.evaluation import repository as repo  # job/score/report data access
+from services.evaluation.agents.definitions import select_agents  # agents for the GD type
+from services.evaluation.aggregator import aggregate_session, normalise_weights  # fixed formula
+from services.evaluation.graph import run_graph  # LangGraph engine
+from services.evaluation.group_synthesis import synthesise_group  # group-level narrative
+from services.evaluation.models import AgentOutput, CandidateScore, EvaluationJob, Report  # tables
+from services.evaluation.progress import progress  # change vs earlier sessions
+from services.evaluation.report import (  # assemble report objects
     build_candidate_report,
     build_group_report,
     entry_moments,
 )
-from services.evaluation.supervisor import run as run_supervisor
-from services.evaluation.synthesis import synthesise
-from services.evaluation.tools import TurnRecord
-from services.metrics import service as metrics_service
-from services.notifications.models import NotificationKind
-from services.notifications.service import notify
-from services.observer import service as observer_service
-from services.realtime.hub import hub
-from services.realtime.protocol import ServerEvent, server_frame
-from services.session import repository as session_repo
-from services.session import service as session_service
-from services.session.models import GDSession
-from services.session.state import (
+from services.evaluation.supervisor import run as run_supervisor  # native (asyncio) engine
+from services.evaluation.synthesis import synthesise  # per-candidate narrative
+from services.evaluation.tools import TurnRecord  # turn data for evidence tools
+from services.metrics import service as metrics_service  # deterministic metrics
+from services.notifications.models import NotificationKind  # notification types
+from services.notifications.service import notify  # tell users their report is ready
+from services.observer import service as observer_service  # final rolling state
+from services.realtime.hub import hub  # push evaluation completion to the room
+from services.realtime.protocol import ServerEvent, server_frame  # WebSocket event frames
+from services.session import repository as session_repo  # session/participant lookups
+from services.session import service as session_service  # session access and state
+from services.session.models import GDSession  # session row type
+from services.session.state import (  # state machines
     EvaluationState,
     SessionState,
     transition_evaluation,
     transition_session,
 )
-from services.speech.service import get_transcript
+from services.speech.service import get_transcript  # the raw transcript
 
 logger = logging.getLogger(__name__)
 
@@ -101,8 +135,10 @@ def eval_topic(gd: GDSession) -> str:
     A practice session has one candidate and non-scored AI personas; saying so
     keeps Leadership/Collaboration from penalising the lack of human peers.
     """
+    # Group sessions: the topic is used unchanged.
     if gd.mode != "solo":
         return gd.topic
+    # Practice sessions: append a note so evaluators know the other voices are AI.
     names = ", ".join(p["name"] for p in gd.personas)
     return (
         f"{gd.topic}\n[Practice session: candidate A debated AI personas ({names}), who are "
@@ -125,6 +161,7 @@ async def _orchestrate(
 ) -> OrchestrationOutcome:
     """Run the evaluation workflow on the configured engine."""
     topic = eval_topic(gd)
+    # Default engine: the LangGraph state graph.
     if settings.evaluation_engine.lower() == ENGINE_LANGGRAPH:
         final = await run_graph(
             session_id=str(gd.id),
@@ -141,6 +178,7 @@ async def _orchestrate(
             turns=turns,
             interruptions=interruptions,
         )
+        # Normalise the graph's final state into the shared outcome shape.
         return OrchestrationOutcome(
             outputs_by_candidate=final.get("outputs_by_candidate", {}),
             runs=final.get("runs", []),
@@ -161,7 +199,9 @@ async def _orchestrate(
         metrics=metrics,
         state=state,
     )
+    # Same deterministic aggregator as the graph path, so both engines score identically.
     scores = aggregate_session(result.outputs_by_candidate, weights, interruptions)
+    # Write each candidate's narrative concurrently, paired back to its label.
     syntheses = dict(
         zip(
             scores,
@@ -193,6 +233,7 @@ async def _orchestrate(
 
 def _provenance(runs: list, output) -> dict:
     """Tool calls the specialist made and what the critic said about its verdict."""
+    # Find the run that produced this exact output object, to read its audit trail.
     run = next((r for r in runs if r.output is output), None)
     return {"tool_calls": run.tool_calls, "critic": run.critic} if run else {}
 
@@ -200,6 +241,8 @@ def _provenance(runs: list, output) -> dict:
 async def _set_job_state(
     session: AsyncSession, job: EvaluationJob, target: EvaluationState
 ) -> EvaluationJob:
+    """Move a job to `target` through the evaluation transition table."""
+    # `transition_evaluation` raises on an illegal move, so states can't skip around.
     job.state = str(transition_evaluation(EvaluationState(job.state), target))
     await session.flush()
     return job
@@ -227,6 +270,7 @@ def to_contract(job: EvaluationJob, topic: str, candidates: list[str]) -> Evalua
             agent_version=job.agent_version,
         ),
     )
+    # Fail early if the message wouldn't satisfy the published contract.
     validate_contract(contract)
     return contract
 
@@ -240,6 +284,7 @@ async def request_evaluation(
     an LLM or queue problem — the job row is durable regardless of whether the
     enqueue succeeds.
     """
+    # A session still in progress can't be evaluated.
     if SessionState(gd.state) not in {
         SessionState.ENDED,
         SessionState.EVALUATING,
@@ -248,12 +293,14 @@ async def request_evaluation(
     }:
         raise ConflictError("a session must end before it can be evaluated")
 
+    # Reuse the existing job unless a new version was asked for (or it failed).
     if not force_new_version:
         existing = await repo.latest_job(session, gd.id)
         if existing is not None and EvaluationState(existing.state) not in {EvaluationState.FAILED}:
             # Idempotent: asking twice returns the same job (design §39).
             return existing
 
+    # New job: freeze the rubric (normalised) and the version triple so the run is reproducible.
     version = await repo.next_version(session, gd.id)
     participants = await session_repo.list_active_participants(session, gd.id)
     weights = normalise_weights(gd.rubric_weights)
@@ -273,10 +320,12 @@ async def request_evaluation(
         ),
     )
 
+    # The session itself moves ENDED -> EVALUATING now that a job exists.
     if SessionState(gd.state) is SessionState.ENDED:
         gd.state = str(transition_session(SessionState.ENDED, SessionState.EVALUATING))
         await session.flush()
 
+    # Hand the job to the queue; the durable row above is the safety net if this is lost.
     contract = to_contract(job, gd.topic, [p.candidate_label for p in participants])
     await queue.enqueue(contract)
     return job
@@ -293,8 +342,10 @@ async def run_job(session: AsyncSession, job: EvaluationJob) -> EvaluationJob:
     if gd is None:
         raise NotFoundError("session not found for evaluation job")
 
+    # Start (or restart) the attempt: count it, clear the last error, enter PREPARING.
     job.attempts += 1
     job.error = None
+    # A previously failed job must pass through QUEUED to stay within the transition table.
     if EvaluationState(job.state) is EvaluationState.FAILED:
         await _set_job_state(session, job, EvaluationState.QUEUED)
     await _set_job_state(session, job, EvaluationState.PREPARING)
@@ -309,10 +360,12 @@ async def run_job(session: AsyncSession, job: EvaluationJob) -> EvaluationJob:
     await session.commit()
 
     # 1. Finalise the inputs (design §18): transcript, rolling state, metrics.
+    # First let the Observer finish any audio chunks it hadn't processed yet.
     await observer_service.process_pending_chunks(session, gd, up_to_end=True)
     segments = await get_transcript(session, gd.id)
     metrics = await metrics_service.build_metrics(session, gd.id)
     state = await observer_service.current_state(session, gd.id)
+    # Who took part: labels (A, B, ...), display names, and linked user accounts.
     participants = await session_repo.list_active_participants(session, gd.id)
     labels = [p.candidate_label for p in participants]
     names = {p.candidate_label: p.display_name for p in participants}
@@ -323,6 +376,7 @@ async def run_job(session: AsyncSession, job: EvaluationJob) -> EvaluationJob:
     }
     user_ids = {p.candidate_label: p.user_id for p in participants}
 
+    # Nothing to score if nobody took part.
     if not labels:
         raise ConflictError("session has no participants to evaluate")
 
@@ -352,14 +406,17 @@ async def run_job(session: AsyncSession, job: EvaluationJob) -> EvaluationJob:
         interruptions=interruptions,
     )
 
+    # Some agents failed: record that the job is degraded but continue with the rest.
     if outcome.failures:
         await _set_job_state(session, job, EvaluationState.WAITING_FOR_AGENT)
+    # If every agent failed there is nothing to aggregate; raise so the worker retries.
     if not any(outcome.outputs_by_candidate.values()):
         raise RuntimeError(
             f"every evaluator agent failed ({len(outcome.failures)} calls); "
             "job cannot aggregate"
         )
 
+    # Persist each validated agent verdict exactly as produced (the evidence trail).
     for label, outputs in outcome.outputs_by_candidate.items():
         for output in outputs:
             agent_name = next(
@@ -385,6 +442,7 @@ async def run_job(session: AsyncSession, job: EvaluationJob) -> EvaluationJob:
     #    a node that calls the same aggregator — no model runs in it.
     await _set_job_state(session, job, EvaluationState.AGGREGATING)
     scores = outcome.scores
+    # Store each candidate's final score with the weights and metrics behind it.
     for label, score in scores.items():
         await repo.add_score(
             session,
@@ -417,6 +475,7 @@ async def run_job(session: AsyncSession, job: EvaluationJob) -> EvaluationJob:
     # number (claude.md invariant 5).
     syntheses = outcome.syntheses
 
+    # One report per candidate: scores + evidence + feedback + narrative + entry moments.
     for label, score in scores.items():
         report = build_candidate_report(
             candidate_label=label,
@@ -427,6 +486,12 @@ async def run_job(session: AsyncSession, job: EvaluationJob) -> EvaluationJob:
             synthesis=syntheses[label].to_dict() if label in syntheses else {},
             moments=entry_moments(segments, label, names.get(label, label), speaker_names),
         )
+        # Past scores only coach: shown beside the report, never fed to an evaluator.
+        if user_ids.get(label):
+            past = await repo.list_scores_for_user(session, user_ids[label])
+            report.progress = progress(
+                score.dimensions, [p.dimensions for p in past if p.job_id != job.id]
+            )
         await repo.add_report(
             session,
             Report(
@@ -438,6 +503,7 @@ async def run_job(session: AsyncSession, job: EvaluationJob) -> EvaluationJob:
             ),
         )
 
+    # Then the group-level report (candidate_label=None marks it as the group's).
     group = build_group_report(str(gd.id), gd.topic, scores, metrics, state)
     body = group.to_dict()
     # The group report agent writes the narrative; every figure in `body` stays computed.
@@ -455,6 +521,7 @@ async def run_job(session: AsyncSession, job: EvaluationJob) -> EvaluationJob:
     )
 
     # 5. Finish.
+    # Mark the job and the session COMPLETED and bump each user's completed count.
     await _set_job_state(session, job, EvaluationState.COMPLETED)
     job.completed_at = gd.ended_at
     if SessionState(gd.state) is SessionState.EVALUATING:
@@ -462,6 +529,7 @@ async def run_job(session: AsyncSession, job: EvaluationJob) -> EvaluationJob:
     await session.flush()
     await _increment_sessions_completed(session, list(user_ids.values()))
 
+    # Tell the rest of the system: event bus, in-app notifications, then the live room.
     await publish(
         Event.EVALUATION_COMPLETED,
         str(gd.id),
@@ -522,6 +590,7 @@ async def _platform_subjects(
     subjects: dict[str, str] = {}
     for label, user_id in user_ids.items():
         user = await auth_repo.get_user_by_id(session, user_id) if user_id else None
+        # Only accounts created through the platform bridge map to a platform subject.
         subject = platform_subject(user.email) if user else None
         if subject:
             subjects[label] = subject
@@ -532,6 +601,7 @@ async def _increment_sessions_completed(session: AsyncSession, user_ids: list) -
     """FR-02: the profile's session count is derived from completed evaluations."""
     from services.auth import repository as auth_repo
 
+    # De-duplicated, skipping candidates with no linked account.
     for user_id in {u for u in user_ids if u is not None}:
         profile = await auth_repo.get_profile(session, user_id)
         if profile is not None:
@@ -541,6 +611,7 @@ async def _increment_sessions_completed(session: AsyncSession, user_ids: list) -
 
 async def fail_job(session: AsyncSession, job: EvaluationJob, error: str) -> EvaluationJob:
     """Mark a job failed. The session stays EVALUATING so it can be retried."""
+    # Keep the error message bounded so it fits the column and the API response.
     job.error = error[:2000]
     job.state = str(transition_evaluation(EvaluationState(job.state), EvaluationState.FAILED))
     await session.flush()
@@ -558,12 +629,14 @@ async def run_for_session(session: AsyncSession, session_id: uuid.UUID) -> Evalu
     pipeline to run without a Redis-backed worker.
     """
     gd = await session_service.require_session(session, session_id)
+    # Create the job on demand if the session doesn't have one yet.
     job = await repo.latest_job(session, session_id)
     if job is None:
         job = await request_evaluation(session, gd)
     try:
         return await run_job(session, job)
     except Exception as exc:
+        # Record the failure on the job, then re-raise so the caller sees it.
         await fail_job(session, job, str(exc))
         raise
 
@@ -571,6 +644,7 @@ async def run_for_session(session: AsyncSession, session_id: uuid.UUID) -> Evalu
 def outputs_to_contracts(rows: list[AgentOutput]) -> dict[str, list[EvaluationOutput]]:
     """Stored agent outputs → contract objects, for re-deriving a score."""
     grouped: dict[str, list[EvaluationOutput]] = {}
+    # Rebuild contract objects from DB rows and group them by candidate.
     for row in rows:
         grouped.setdefault(row.candidate_label, []).append(
             EvaluationOutput(
@@ -587,4 +661,5 @@ def outputs_to_contracts(rows: list[AgentOutput]) -> dict[str, list[EvaluationOu
 
 
 async def latest_state(session: AsyncSession, session_id: uuid.UUID) -> RollingState:
+    """The Observer's most recent rolling state for the session."""
     return await observer_service.current_state(session, session_id)

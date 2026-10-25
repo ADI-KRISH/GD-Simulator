@@ -16,17 +16,34 @@ a practice discussion, and it is M04's call, not GD's.
 
 Best-effort and off the student's path: M04 being down narrows nothing in GD.
 The payload shapes copy M13's producer (`emit.py`) and M04's `ObservationIn`.
+
+Purpose:    push a finished GD report's per-dimension scores, with the student's
+            own words as evidence, to the platform's skill graph (M04).
+Why needed: it is how a practice discussion shows up on the student's long-term
+            skill profile; without it GD results would stay trapped in GD.
+Contains:
+    DIMENSION_CONCEPTS - which M04 concept each GD dimension is evidence of
+                         (content and leadership are deliberately not sent).
+    ARTIFACT_TYPE, TIMEOUT_SECONDS - how M04 stores the transcript; HTTP timeout.
+    _is_uuid        - M04 only accepts UUID ids; check before sending.
+    own_lines       - extract just this candidate's words from the transcript.
+    observations_for- build the list of M04 observation payloads.
+    send_candidate  - consent check -> register artifact -> post observations.
+    send_results    - loop over all platform candidates; never raises.
+Used by:    evaluation/service (calls it once a report exists) and tests/test_platform.
+Depends on: common/config (platform_bridge, M04 URL), speech/stt (to detect the
+            fake transcriber), Platform_Core's `ai_core.service` for headers.
 """
 
-import logging
-import uuid
-from typing import Any
+import logging  # info/warn when results are skipped or fail
+import uuid  # check that ids are UUIDs (M04 requires it)
+from typing import Any  # loosely-typed score/segment objects
 
-import httpx
-from ai_core import service as platform_service
+import httpx  # HTTP client for talking to M04
+from ai_core import service as platform_service  # Platform_Core auth headers
 
-from services.common.config import settings
-from services.speech.stt import get_stt_provider
+from services.common.config import settings  # platform_bridge flag and M04 URL
+from services.speech.stt import get_stt_provider  # detect the fake (stub) transcriber
 
 logger = logging.getLogger(__name__)
 
@@ -46,11 +63,13 @@ DIMENSION_CONCEPTS: dict[str, str] = {
     "behavior": "concept:handling_interruptions",  # interruptions, turn-taking
 }
 
+# What M04 stores the candidate's own lines as, and how long we wait for it.
 ARTIFACT_TYPE = "gd_transcript"
 TIMEOUT_SECONDS = 10.0
 
 
 def _is_uuid(value: str) -> bool:
+    """True if `value` parses as a UUID."""
     try:
         uuid.UUID(value)
     except (ValueError, TypeError, AttributeError):
@@ -60,6 +79,7 @@ def _is_uuid(value: str) -> bool:
 
 def own_lines(segments: list[Any], label: str) -> str:
     """The candidate's own words, in order — the text M04 quotes evidence from."""
+    # Keep only this candidate's non-empty segments, in the order they were spoken.
     return "\n".join(
         segment.text.strip()
         for segment in sorted(segments, key=lambda s: s.start)
@@ -75,6 +95,7 @@ def observations_for(
     consent_id: str,
 ) -> list[dict[str, Any]]:
     """One observation per dimension GD scored and M04 has a concept for."""
+    # Every observation cites the same transcript artifact as its evidence.
     evidence = [
         {
             "kind": "artifact",
@@ -83,6 +104,7 @@ def observations_for(
             "checksum": artifact["checksum"],
         }
     ]
+    # Skip dimensions M04 has no concept for; scale 0-10 scores to 0-1 and clamp.
     return [
         {
             "candidate_id": subject,
@@ -109,21 +131,26 @@ async def send_candidate(
     client: httpx.AsyncClient | None = None,
 ) -> int:
     """Send one candidate's results to M04. Returns how many observations it took."""
+    # Guard 1: with nothing to quote, or nothing M04 tracks, there is nothing to send.
     if not lines or not any(d in DIMENSION_CONCEPTS for d in dimensions):
         return 0  # nothing they said to quote, or nothing scored that M04 tracks
+    # Guard 2: M04 only understands UUID ids (a dev/demo subject may not be one).
     if not _is_uuid(subject) or not _is_uuid(session_id):
         # M04 keys students and sessions by UUID and would refuse the batch.
         logger.info("not a platform UUID; GD results not sent", extra={"subject": subject})
         return 0
+    # Authenticate as the platform student whose data this is.
     headers = {
         **platform_service.headers(),
         "X-Candidate-Id": subject,
         "X-Role": "student",
     }
     base = f"{settings.m04_url.rstrip('/')}/v1/candidates/{subject}"
+    # Own (and later close) a client only if the caller did not supply one.
     owns_client = client is None
     client = client or httpx.AsyncClient(timeout=TIMEOUT_SECONDS)
     try:
+        # Step 1: M04 requires practice consent on every observation.
         consents = await client.get(
             f"{base}/consent", params={"purpose": "practice"}, headers=headers
         )
@@ -134,6 +161,7 @@ async def send_candidate(
                 "no practice consent in M04; GD results not sent", extra={"subject": subject}
             )
             return 0
+        # Step 2: register the candidate's own lines so the evidence resolves.
         artifact = await client.post(
             f"{base}/artifacts",
             json={
@@ -145,6 +173,7 @@ async def send_candidate(
             headers=headers,
         )
         artifact.raise_for_status()
+        # Step 3: one observation per scored dimension M04 has a concept for.
         batch = observations_for(
             subject, session_id, dimensions, artifact.json(), active[0]["consent_id"]
         )
@@ -154,6 +183,7 @@ async def send_candidate(
         recorded.raise_for_status()
         return len(batch)
     finally:
+        # Release the connection pool we created, even when a step failed.
         if owns_client:
             await client.aclose()
 
@@ -165,8 +195,10 @@ async def send_results(
     subjects: dict[str, str],
 ) -> int:
     """Every platform candidate's results; never raises. `subjects`: label -> subject."""
+    # Nothing to do outside the platform, or when no candidate came from it.
     if not settings.platform_bridge or not subjects:
         return 0
+    # Refuse to send canned stub transcripts: they are not the student's words.
     if get_stt_provider().name == "stub":
         # The stub hears every spoken turn as one of six canned sentences. Scored,
         # those are not the student's words, and quoted to M04 they would be
@@ -178,6 +210,7 @@ async def send_results(
         )
         return 0
     sent = 0
+    # One candidate at a time, so one failure cannot block the others.
     for label, subject in subjects.items():
         score = scores.get(label)
         if score is None:

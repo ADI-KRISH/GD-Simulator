@@ -1,5 +1,34 @@
 """The solo-practice conversation loop.
 
+Purpose:     Runs the live conversation between one student and the AI personas:
+             hears the student (speech or typing), decides which persona answers,
+             generates the line, speaks it, and records every turn exactly like a
+             group session would.
+Why needed:  This is the heart of practice mode. It makes the personas behave like
+             a real panel (take turns, open, invite a silent student, wrap up on
+             time, never talk over the student) while feeding the normal speech,
+             metrics and evaluation pipeline so a practice run gets a real report.
+Contains:
+  - Tuning constants (timeouts, token budget, chain probability, minimum words).
+  - `LINE_SCHEMA`, `Line`   the JSON a persona must return and its parsed form.
+  - `SendJson`, `SendBytes` callback types for sending to the browser.
+  - `PracticeRoom`          one per connected student:
+      - setup/teardown:   `load`, `start_session`, `close`
+      - clock helpers:    `_timing`, `_live_clock`, `_now`
+      - student's turn:   `on_utterance_start/end`, `on_audio`, `submit_text`,
+                          `on_text`, `on_raise_hand`, `_take_student_turn`,
+                          `on_playback_ended`
+      - recording:        `_record`, `_announce`
+      - persona's turn:   `_addressed`, `_note_turn`, `_choose`, `_start_burst`,
+                          `_listen`, `_burst`, `_idle_loop`, `_generate`,
+                          `_persona_turn`
+Used by:     practice/router.py (creates a `PracticeRoom` per socket),
+             tests/test_panel.py, tests/test_practice.py.
+Depends on:  practice/panel.py (decisions), practice/timing.py (phases, imported
+             as `clock`), llm/ (persona model), speech/ (STT, TTS, transcript),
+             session/ (record speech and turns), realtime/ (hub, protocol, timer,
+             ws), ai_platform/bridge.py (`UNNAMED_STUDENT`).
+
 One `PracticeRoom` per connected student. It owns the turn-taking between the
 student and the AI personas:
 
@@ -19,32 +48,32 @@ ponytail: one in-process loop per socket, personas never interrupt the student.
 Add persona barge-in when a persona's `eagerness` should override waiting.
 """
 
-import asyncio
-import logging
-import random
-import re
-import time
-import uuid
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+import asyncio  # tasks, events and sleeps that drive turn-taking
+import logging  # warn on STT/LLM/TTS failures
+import random  # randomised chaining and floor bids
+import re  # count words in an utterance
+import time  # monotonic clock for idle/silence tracking
+import uuid  # session id type
+from collections.abc import Awaitable, Callable  # callback types for sending to the browser
+from dataclasses import dataclass  # the Line container
 
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker  # DB session types
 
-from services.ai_platform.bridge import UNNAMED_STUDENT
-from services.llm import LLMError, get_persona_llm_provider
-from services.practice import panel
-from services.practice import timing as clock
-from services.realtime.hub import hub
-from services.realtime.protocol import ServerEvent, server_frame
-from services.realtime.timer import announce_discussion
-from services.realtime.ws import broadcast_turns
-from services.session import repository as session_repo
-from services.session import service as session_service
-from services.session.models import GDSession
-from services.session.state import SessionState
-from services.speech import service as speech_service
-from services.speech.stt import get_stt_provider
-from services.speech.tts import (
+from services.ai_platform.bridge import UNNAMED_STUDENT  # placeholder name for unnamed students
+from services.llm import LLMError, get_persona_llm_provider  # model that voices the personas
+from services.practice import panel  # pure decisions: stances, bids, repeats, prompts
+from services.practice import timing as clock  # clock phases and time guidance
+from services.realtime.hub import hub  # broadcast to the room
+from services.realtime.protocol import ServerEvent, server_frame  # WebSocket event frames
+from services.realtime.timer import announce_discussion  # tell the room the discussion began
+from services.realtime.ws import broadcast_turns  # announce tracked turns
+from services.session import repository as session_repo  # load the session
+from services.session import service as session_service  # record speech/turns, clocks
+from services.session.models import GDSession  # session row type
+from services.session.state import SessionState  # LIVE checks
+from services.speech import service as speech_service  # persist transcript segments
+from services.speech.stt import get_stt_provider  # transcribe the student's audio
+from services.speech.tts import (  # speak persona lines
     TTSError,
     estimate_seconds,
     get_tts_provider,
@@ -52,6 +81,7 @@ from services.speech.tts import (
 
 logger = logging.getLogger(__name__)
 
+# The student is always candidate "A" in a practice session.
 STUDENT_LABEL = "A"
 # A persona's audio is still audible for a moment after the student cuts in
 # (the browser needs time to stop playback). Counting that tail is what makes a
@@ -90,6 +120,7 @@ PLAYBACK_SLACK_SECONDS = 4.0
 # Utterances shorter than this are mic noise, not contributions.
 MIN_WORDS = 2
 
+# JSON shape a persona's LLM reply must follow.
 LINE_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -106,16 +137,21 @@ LINE_SCHEMA = {
 
 @dataclass(frozen=True, slots=True)
 class Line:
+    """One generated persona line: whether to speak, what to say, and if it concludes."""
+
     speak: bool
     text: str
     is_conclusion: bool
 
 
+# Async callbacks the websocket layer hands the room for sending JSON / audio bytes.
 SendJson = Callable[[dict], Awaitable[None]]
 SendBytes = Callable[[bytes], Awaitable[None]]
 
 
 class PracticeRoom:
+    """The live conversation between one student and the AI personas."""
+
     def __init__(
         self,
         factory: async_sessionmaker[AsyncSession],
@@ -124,6 +160,7 @@ class PracticeRoom:
         send_json: SendJson,
         send_bytes: SendBytes,
     ) -> None:
+        # Identity and database access for this room.
         self.factory = factory
         self.session_id = session_id
         self.sid = str(session_id)
@@ -137,6 +174,8 @@ class PracticeRoom:
         self._send_json = send_json
         self._send_bytes = send_bytes
 
+        # Live conversation state: who is speaking, what has been said, who was cut off,
+        # and the student's current utterance.
         self.personas: dict[str, dict] = {}
         self.lines: list[tuple[str, str]] = []  # (speaker name, text)
         self.last_speaker: str | None = None
@@ -178,8 +217,10 @@ class PracticeRoom:
     # ------------------------------------------------------------------ setup
 
     async def load(self) -> GDSession:
+        """Load the session's personas from the database and pick the moderator."""
         async with self.factory() as db:
             gd = await session_service.require_session(db, self.session_id)
+            # Index personas by label (P1, P2...) and choose who also moderates.
             self.personas = {p["label"]: p for p in gd.personas}
             self.moderator = panel.pick_moderator(self.personas)
             self._started_at_gd = gd
@@ -189,6 +230,7 @@ class PracticeRoom:
         """Student pressed start: ready up and begin preparation."""
         async with self.factory() as db:
             gd = await session_service.require_session(db, self.session_id)
+            # Only a not-yet-started session needs readying and starting.
             if SessionState(gd.state) in {SessionState.WAITING, SessionState.READY}:
                 await session_service.set_ready(db, gd, user, True)
                 await session_service.start_session(db, gd)
@@ -203,13 +245,16 @@ class PracticeRoom:
                 self.sid,
                 server_frame(ServerEvent.SESSION_STARTED, self.sid, {"phase": "preparation"}),
             )
+        # Start the background loop that opens the discussion and nudges a quiet student.
         if self.idle is None:
             self.idle = asyncio.create_task(self._idle_loop(), name=f"practice-idle-{self.sid}")
 
     async def close(self) -> None:
+        """Cancel every background task this room started (called on disconnect)."""
         tasks = [t for t in (self.burst, self.idle, *self._tasks) if t and not t.done()]
         for task in tasks:
             task.cancel()
+        # Wait for the cancellations to finish so nothing keeps running after disconnect.
         await asyncio.gather(*tasks, return_exceptions=True)
 
     # ------------------------------------------------------------------ clock
@@ -218,6 +263,7 @@ class PracticeRoom:
         """Where the discussion is on the clock, or None unless it is LIVE."""
         async with self.factory() as db:
             gd = await session_repo.get_session_by_id(db, self.session_id)
+            # Outside LIVE (preparing, ended...) the personas shouldn't be talking.
             if gd is None or SessionState(gd.state) is not SessionState.LIVE:
                 return None
             self._started_at_gd = gd
@@ -235,12 +281,15 @@ class PracticeRoom:
             return session_service.elapsed_discussion_seconds(gd)
 
     def _now(self) -> float:
-        gd = self._started_at_gd
+        """Seconds into the discussion, from the last session row we loaded (0 if none)."""
+        gd =self._started_at_gd
         return session_service.elapsed_discussion_seconds(gd) if gd else 0.0
 
     # --------------------------------------------------------- student's turn
 
     async def on_utterance_start(self) -> None:
+        """The browser heard the student start talking; cut off any persona (barge-in)."""
+        # Ignore speech outside the live discussion window.
         if await self._live_clock() is None:
             return
         self.user_active = True
@@ -251,8 +300,10 @@ class PracticeRoom:
             self.cut_label = self.playing
             self.barge.set()
             await self._send_json(server_frame(ServerEvent.STOP_AUDIO, self.sid, {}))
+        # Otherwise cancel any persona reply still being prepared: the student has the floor.
         elif self.burst and not self.burst.done():
             self.burst.cancel()
+        # Tell the room the student started speaking (drives the live indicator).
         await hub.broadcast(
             self.sid,
             server_frame(
@@ -263,11 +314,13 @@ class PracticeRoom:
         )
 
     async def on_utterance_end(self) -> None:
+        """The browser heard the student stop; remember when (the audio follows)."""
         if self.user_started is not None:
             self.user_ended = max(self._now(), self.user_started)
 
     async def on_audio(self, blob: bytes) -> None:
         """The utterance's audio arrived: transcribe, record, let the personas answer."""
+        # Take the utterance's timing and any barge-in marker, then reset for the next one.
         start, end = self.user_started, self.user_ended
         cut, self.cut_label = self.cut_label, None
         self.user_started = self.user_ended = None
@@ -280,9 +333,11 @@ class PracticeRoom:
                 {"candidate_label": STUDENT_LABEL, "start": start, "end": end},
             ),
         )
+        # No timing or no audio: nothing to transcribe.
         if start is None or end is None or not blob:
             return
 
+        # While transcribing, personas hold their reply (stt_pending > 0).
         self.stt_pending += 1
         try:
             transcription = await get_stt_provider().transcribe(blob)
@@ -297,12 +352,15 @@ class PracticeRoom:
         finally:
             self.stt_pending -= 1
         text = transcription.text.strip()
+        # Fewer than MIN_WORDS words is mic noise, not a contribution.
         if len(re.findall(r"\w+", text)) < MIN_WORDS:
             return
         await self._take_student_turn(start, end, text, cut)
 
     def submit_text(self, text: str) -> None:
         """Queue a typed turn without holding up the socket (it may wait for a line)."""
+        # Run as a background task; keep a reference so it isn't garbage-collected,
+        # and drop it automatically when it finishes.
         task = asyncio.create_task(self.on_text(text), name=f"practice-text-{self.sid}")
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
@@ -316,13 +374,16 @@ class PracticeRoom:
         used to be squeezed into the instant before "now": three typed points
         came to two seconds of speaking time, and the scoring reads speaking time.
         """
+        # Tidy whitespace and cap the length; ignore too-short text or text outside LIVE.
         text = " ".join(text.split())[:MAX_TYPED_CHARS]
         if len(re.findall(r"\w+", text)) < MIN_WORDS or await self._live_clock() is None:
             return
+        # Let any persona line in progress finish before the typed turn begins.
         for _ in range(TYPED_WAIT_STEPS):
             if not self.speaking:
                 break
             await asyncio.sleep(0.1)
+        # Give the typed turn a realistic speaking duration, starting after the last turn.
         now = self._now()
         start = max(now, self.last_end)
         end = start + estimate_seconds(text)
@@ -335,7 +396,9 @@ class PracticeRoom:
         if not self.moderator or await self._live_clock() is None:
             return
         self.hands += 1
+        # Queue an invitation from the moderator; it is delivered at the next gap.
         self.forced = (self.moderator, "hand", "")
+        # If the room is quiet right now, deliver it immediately.
         busy = self.speaking or self.user_active or (self.burst and not self.burst.done())
         if not busy:
             self._start_burst()
@@ -348,15 +411,19 @@ class PracticeRoom:
         `hold`: how long the panel waits before answering (a typed turn's spoken
         length); by default the short "hear them out" pause.
         """
+        # If the student wraps the discussion up near the end, the panel won't conclude again.
         when = await self._timing()
         if when and when.converging and clock.looks_like_conclusion(text):
             self.concluded = True
+        # Persist the turn (speech event, tracked turn, transcript segment).
         changed, interrupts = await self._record(STUDENT_LABEL, start, end, text, interrupted=cut)
+        # Update the conversation bookkeeping used by the next persona's prompt and bid.
         self.lines.append((self.student_name, text))
         self.last_speaker = STUDENT_LABEL
         self.last_activity = time.monotonic()
         self._note_turn(STUDENT_LABEL, start, end, text)
         self.student_spoke_at = time.monotonic()
+        # Remember if they asked "are you an AI?" so the reply admits it (AC-14.5).
         self.ai_question = text if panel.asked_if_ai(text) else ""
         if self.forced and self.forced[1] == "hand":
             # They came in on their own: inviting them now would come after the fact.
@@ -367,6 +434,7 @@ class PracticeRoom:
             if target:
                 self.redirects += 1
                 self.forced = (self.moderator, "redirect", target)
+        # Show the line in the transcript, echo it back to the student, then let personas reply.
         await self._announce(STUDENT_LABEL, self.student_display, text, changed, interrupts)
         await self._send_json(server_frame(ServerEvent.USER_TRANSCRIPT, self.sid, {"text": text}))
         self._start_burst(
@@ -383,17 +451,21 @@ class PracticeRoom:
     async def _record(
         self, label: str, start: float, end: float, text: str, *, interrupted: str | None = None
     ):
+        """Save one turn as a speech event, tracked turn and transcript segment."""
         async with self.factory() as db:
             gd = await session_service.require_session(db, self.session_id)
+            # Same call group sessions use, so metrics and turns stay consistent.
             _, changed = await session_service.record_speech_tracked(
                 db, gd, label, start, end, interrupted=interrupted
             )
+            # Save the words immediately (the transcript is the source of truth).
             await speech_service.persist_segment(db, gd.id, label, start, end, text, 0.95)
             interrupts = await session_service.interruption_times(db, self.session_id)
             await db.commit()
         return changed, interrupts
 
     async def _announce(self, label, name, text, changed, interrupts) -> None:
+        """Tell the room a line was added to the transcript, plus any turn changes."""
         await hub.broadcast(
             self.sid,
             server_frame(
@@ -407,7 +479,9 @@ class PracticeRoom:
     # --------------------------------------------------------- persona's turn
 
     def _addressed(self, text: str) -> str | None:
+        """Label of the persona the text names ("Arjun, what do you think?"), if any."""
         lowered = text.lower()
+        # Whole-word, case-insensitive match on each persona's name.
         for label, persona in self.personas.items():
             if re.search(rf"\b{re.escape(persona['name'].lower())}\b", lowered):
                 return label
@@ -415,6 +489,7 @@ class PracticeRoom:
 
     def _note_turn(self, label: str, start: float, end: float, text: str) -> None:
         """Bookkeeping for the bids: whose turn it was, and how long they held the floor."""
+        # Advance the turn counter and credit this speaker with the time they held the floor.
         self.turn += 1
         self.last_turn_of[label] = self.turn
         self.floor[label] = self.floor.get(label, 0.0) + max(0.0, end - start)
@@ -431,11 +506,14 @@ class PracticeRoom:
         """
         if not self.personas:
             return None, None, ""
+        # 1) A turn already owed (redirect, curveball, raised hand) goes first.
         if self.forced:
             forced, self.forced = self.forced, None
             return forced
+        # 2) Whoever the last speaker addressed by name.
         if addressed and addressed != self.last_speaker:
             return addressed, None, ""
+        # 3) Otherwise the highest bid; near the end the moderator is pushed to close.
         closing = converging and not self.concluded
         label = panel.choose_next(
             self.personas,
@@ -453,12 +531,14 @@ class PracticeRoom:
     def _start_burst(
         self, addressed: str | None = None, hold: float = 0.0, opening: bool = False
     ) -> None:
+        """Start (or restart) the background task in which personas respond."""
         if self.speaking and not self.barge.is_set():
             return  # one voice at a time: never start a second line over a live one
         # A line the student has cut may still be unwinding (its audio stream has not
         # noticed yet). It must not swallow the reply to what they just said: that
         # left the student unanswered until the idle nudge, 14 s later. `_burst`
         # waits for the cut line to finish first.
+        # Replace any pending reply with a fresh one, then start it in the background.
         if self.burst and not self.burst.done():
             self.burst.cancel()
         self.burst = asyncio.create_task(
@@ -467,6 +547,8 @@ class PracticeRoom:
 
     async def _listen(self, hold: float) -> bool:
         """Wait until the student is done talking. False if they are still going."""
+        # A short pause to "hear them out", then wait (up to a limit) while they speak
+        # or their audio is still being transcribed.
         await asyncio.sleep(hold)
         waited = 0.0
         while (self.user_active or self.stt_pending) and waited < LISTEN_WAIT_LIMIT_SECONDS:
@@ -481,12 +563,14 @@ class PracticeRoom:
         try:
             if not await self._listen(hold):
                 return  # the student is still speaking; their next utterance re-triggers us
+            # Wait for a line the student cut off to finish unwinding before replying.
             for _ in range(CUT_LINE_WAIT_STEPS):
                 if not self.speaking:
                     break
                 await asyncio.sleep(0.1)  # a line the student cut is still unwinding
             if self.speaking:
                 return
+            # Up to MAX_CHAIN personas speak in a row (usually one).
             for turn in range(MAX_CHAIN):
                 when = await self._timing()
                 if when is None or when.phase == clock.OVER:
@@ -507,12 +591,14 @@ class PracticeRoom:
                     return  # after an invitation the floor is the student's
                 if self.forced:
                     continue  # a turn is owed (the persona a redirect named): take it now
+                # Otherwise a follow-on speaker joins only some of the time (natural pacing).
                 if random.random() > CHAIN_PROBABILITY:
                     return
                 await asyncio.sleep(0.6)
         except asyncio.CancelledError:
             raise
         except Exception:
+            # A persona failure must not take the socket down; log it and wait for the next trigger.
             logger.exception("persona burst failed", extra={"session_id": self.sid})
 
     async def _idle_loop(self) -> None:
@@ -520,6 +606,7 @@ class PracticeRoom:
         try:
             while True:
                 await asyncio.sleep(1.0)
+                # Not LIVE: either not started yet (keep waiting) or finished (stop the loop).
                 if await self._live_clock() is None:
                     async with self.factory() as db:
                         gd = await session_repo.get_session_by_id(db, self.session_id)
@@ -537,8 +624,10 @@ class PracticeRoom:
                     continue
                 if when.converging and self.concluded:
                     continue
+                # How long the room has been quiet, and how long to tolerate (shorter near the end).
                 quiet = time.monotonic() - self.last_activity
                 nudge_after = WRAP_UP_IDLE_SECONDS if when.converging else IDLE_SECONDS
+                # Never start a reply while someone is mid-speech or a reply is underway.
                 busy = (
                     self.speaking
                     or self.user_active
@@ -550,9 +639,11 @@ class PracticeRoom:
                 if self.opened and self.forced:
                     self._start_burst()  # a turn is owed (a raised hand): take it now
                     continue
+                # First, the moderator opens the discussion after a short delay...
                 if not self.opened and quiet >= OPENING_DELAY_SECONDS:
                     self.opened = True
                     self._start_burst(opening=True)
+                # ...afterwards, a quiet room gets a nudge from a persona.
                 elif self.opened and quiet >= nudge_after:
                     self.last_activity = time.monotonic()
                     silent = time.monotonic() - self.student_spoke_at
@@ -572,9 +663,12 @@ class PracticeRoom:
         target: str = "",
         repeated: str = "",
     ) -> Line:
+        """Ask the persona LLM for this persona's next line, given the clock and recent talk."""
+        # The other panel members' names, for the prompt.
         others = ", ".join(
             p["name"] for p in self.personas.values() if p["label"] != persona["label"]
         )
+        # Only the most recent lines are sent, to stay within the model's token budget.
         history = (
             "\n".join(f"{who}: {text}" for who, text in self.lines[-HISTORY_LINES:])
             or "(nobody has spoken yet)"
@@ -582,6 +676,7 @@ class PracticeRoom:
         async with self.factory() as db:
             gd = await session_service.require_session(db, self.session_id)
             topic = gd.topic
+        # Assemble the persona's full system prompt (character, stance, rules, clock, task).
         system = panel.persona_system(
             persona,
             student=self.student_name,
@@ -605,6 +700,7 @@ class PracticeRoom:
             # JSON (Groq: json_validate_failed, a student's turn went unanswered).
             max_tokens=PERSONA_MAX_TOKENS,
         )
+        # Clean the spoken text (some models wrap it in quotes) and build the typed result.
         text = str(result.data.get("text", "")).strip().strip('"')
         return Line(
             speak=bool(result.data.get("speak", True)) and bool(text),
@@ -624,6 +720,7 @@ class PracticeRoom:
         student, a redirect to `target`, a curveball, the close.
         """
         persona = self.personas[label]
+        # Don't start a line if the discussion isn't live or has run out of time.
         when = await self._timing()
         if when is None or when.phase == clock.OVER:
             return False
@@ -653,9 +750,11 @@ class PracticeRoom:
         # AC-14.5: asked whether it is an AI, the first reply says so — every time.
         text = panel.ensure_honest(line.text, self.ai_question)
         self.ai_question = ""
+        # The student started talking while we generated: drop the line, don't talk over them.
         if self.user_active or await self._live_clock() is None:
             return False
 
+        # Stage 1: announce the line and stream its audio (nothing audible yet).
         tts = get_tts_provider()
         self.speaking = label
         self.barge.clear()
@@ -665,6 +764,7 @@ class PracticeRoom:
         total_bytes = 0
         audio = tts.produces_audio
         try:
+            # Tell the browser a line is coming (text, whether audio follows, voice gender).
             await self._send_json(
                 server_frame(
                     ServerEvent.PERSONA_AUDIO_START,
@@ -679,6 +779,7 @@ class PracticeRoom:
                 )
             )
             started_audio = True
+            # Stream the synthesized speech to the browser chunk by chunk.
             if audio:
                 try:
                     async for chunk in tts.stream(text, persona["voice_id"]):
@@ -687,6 +788,7 @@ class PracticeRoom:
                         total_bytes += len(chunk)
                         await self._send_bytes(chunk)
                 except TTSError as exc:
+                    # TTS failed: fall back to the browser's built-in voice for this line.
                     logger.warning("tts failed, falling back", extra={"error": str(exc)})
                     audio = False
                     await self._send_json(
@@ -694,9 +796,10 @@ class PracticeRoom:
                     )
             if self.barge.is_set():
                 return True
+            # How long the line will take to say (from audio size, or a words-per-second estimate).
             duration = total_bytes / tts.mp3_bytes_per_second if audio else estimate_seconds(text)
 
-            # The browser starts playing on READY; from here the persona holds the floor.
+            # Stage 2: the browser starts playing on READY; from here the persona holds the floor.
             start = await self._live_clock()
             if start is None:
                 return False
@@ -726,6 +829,7 @@ class PracticeRoom:
             )
             for task in waits:
                 task.cancel()
+            # Work out when the persona really stopped: cut off, finished playing, or estimated.
             cut = self.barge.is_set()
             if cut:
                 end = max(self._now(), start) + BARGE_IN_TAIL_SECONDS
@@ -745,6 +849,7 @@ class PracticeRoom:
             self.speaking = None
             self.playing = None
 
+        # Update shared state: conclusion flag, history, last speaker and floor shares.
         if line.is_conclusion:
             self.concluded = True
         self.lines.append((persona["name"], text))
@@ -753,6 +858,7 @@ class PracticeRoom:
         self._note_turn(label, start, end, text)
         if cue == "redirect" and target in self.personas and not cut:
             self.forced = (target, None, "")  # the persona just handed the floor answers
+        # Close out the line for the browser, then log it in the transcript and turn tracking.
         await self._send_json(
             server_frame(
                 ServerEvent.PERSONA_AUDIO_END, self.sid, {"candidate_label": label, "cut": cut}

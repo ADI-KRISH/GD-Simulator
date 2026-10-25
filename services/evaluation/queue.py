@@ -1,5 +1,29 @@
 """Durable evaluation queue on Redis Streams (FR-19, design §19, §38, §39).
 
+Purpose:     A thin wrapper over Redis Streams that carries evaluation jobs from
+             "session ended" to the background worker, with retries and a
+             dead-letter stream for jobs that keep failing.
+Why needed:  Evaluation must be asynchronous and survive crashes (claude.md
+             invariant 1): a worker that dies mid-job leaves the message pending so
+             another worker can claim it, and a poisoned job stops after
+             `MAX_ATTEMPTS` instead of looping forever.
+Contains:
+  - `QUEUE_STREAM`, `DEAD_LETTER_STREAM`, `CONSUMER_GROUP`, `MAX_ATTEMPTS`,
+    `CLAIM_IDLE_MS`   the stream names and retry / takeover policy.
+  - `QueuedJob`       a job read from the stream plus what's needed to ack it.
+  - `ensure_group`    create the worker consumer group if missing.
+  - `enqueue`         publish a job (never raises; the DB row is the safety net).
+  - `_decode`         rebuild a `QueuedJob` from raw stream fields.
+  - `read`            claim new jobs for a worker (the count is backpressure).
+  - `claim_stalled`   take over jobs abandoned by a dead worker.
+  - `ack`             mark a job processed so it isn't redelivered.
+  - `retry`           requeue a failed job, or dead-letter it after the last try.
+  - `depth`, `dead_letters`  observability: queue size and failed-job inspection.
+Used by:     evaluation/service.py (enqueue), evaluation/worker.py (consume),
+             evaluation/router.py (queue status endpoints), tests/test_evaluation_api.py.
+Depends on:  common/contracts.py (`EvaluationJob`), common/events.py (announce
+             `evaluation.requested`), common/redis_client.py.
+
 What the queue has to provide, per design §19: retry, backpressure, scheduling,
 parallel workers and failure isolation. Redis Streams gives all five through
 consumer groups — a message stays pending until acked, so a worker that dies
@@ -15,16 +39,16 @@ Two things that matter more than the transport:
   stream instead of cycling forever and starving healthy jobs.
 """
 
-import json
-import logging
-from dataclasses import dataclass
-from typing import Any
+import json  # (de)serialise the job payload in stream fields
+import logging  # queue lifecycle logs
+from dataclasses import dataclass  # QueuedJob container
+from typing import Any  # raw stream fields
 
-from redis.asyncio import Redis
+from redis.asyncio import Redis  # client type for the optional redis= argument
 
-from services.common.contracts import EvaluationJob
-from services.common.events import Event, publish
-from services.common.redis_client import get_redis
+from services.common.contracts import EvaluationJob  # the job contract
+from services.common.events import Event, publish  # announce evaluation.requested
+from services.common.redis_client import get_redis  # shared client
 
 logger = logging.getLogger(__name__)
 
@@ -43,20 +67,25 @@ CLAIM_IDLE_MS = 5 * 60 * 1000
 
 @dataclass(slots=True)
 class QueuedJob:
+    """A job as read from the stream, with the id needed to acknowledge it."""
+
     message_id: str
     job: EvaluationJob
     attempts: int
 
     @property
     def idempotency_key(self) -> str:
+        """The wrapped job's idempotency key (session id + evaluation version)."""
         return self.job.idempotency_key
 
 
 async def ensure_group(redis: Redis | None = None) -> None:
+    """Create the worker consumer group on the queue stream if it does not exist."""
     client = redis or get_redis()
     try:
         await client.xgroup_create(QUEUE_STREAM, CONSUMER_GROUP, id="0", mkstream=True)
     except Exception as exc:
+        # "BUSYGROUP" just means the group already exists, which is fine.
         if "BUSYGROUP" not in str(exc):
             raise
 
@@ -70,17 +99,20 @@ async def enqueue(job: EvaluationJob, *, redis: Redis | None = None) -> str | No
     and a queue outage must not fail the session-end path.
     """
     client = redis or get_redis()
+    # The job is serialised to JSON; "attempts" counts retries for the dead-letter rule.
     payload = {"job": job.model_dump_json(), "attempts": "0"}
     try:
         await ensure_group(client)
         message_id = await client.xadd(QUEUE_STREAM, payload)
     except Exception as exc:
+        # Queue outage: log and carry on, so ending a session never fails because of it.
         logger.warning(
             "evaluation enqueue failed",
             extra={"session_id": job.session_id, "error": str(exc)},
         )
         return None
 
+    # Announce the request on the event bus for anything else that cares.
     await publish(
         Event.EVALUATION_REQUESTED,
         job.session_id,
@@ -95,6 +127,7 @@ async def enqueue(job: EvaluationJob, *, redis: Redis | None = None) -> str | No
 
 
 def _decode(message_id: str, fields: dict[str, Any]) -> QueuedJob:
+    """Rebuild a QueuedJob from raw stream fields."""
     return QueuedJob(
         message_id=message_id,
         job=EvaluationJob.model_validate_json(fields["job"]),
@@ -108,6 +141,7 @@ async def read(
     """Claim jobs for this worker. Backpressure is `count`."""
     client = redis or get_redis()
     await ensure_group(client)
+    # ">" asks for messages never delivered to any consumer; blocks up to block_ms.
     response = await client.xreadgroup(
         CONSUMER_GROUP, consumer, {QUEUE_STREAM: ">"}, count=count, block=block_ms
     )
@@ -134,6 +168,7 @@ async def claim_stalled(
     client = redis or get_redis()
     await ensure_group(client)
     try:
+        # Ask Redis to reassign messages that have sat unacknowledged too long.
         result = await client.xautoclaim(
             QUEUE_STREAM, CONSUMER_GROUP, consumer, min_idle_time=CLAIM_IDLE_MS, count=count
         )
@@ -148,11 +183,13 @@ async def claim_stalled(
         try:
             jobs.append(_decode(message_id, fields))
         except Exception:
+            # Unreadable stalled message: ack it so it can't be claimed forever.
             await client.xack(QUEUE_STREAM, CONSUMER_GROUP, message_id)
     return jobs
 
 
 async def ack(message_id: str, *, redis: Redis | None = None) -> None:
+    """Acknowledge a processed job so the group does not redeliver it."""
     client = redis or get_redis()
     await client.xack(QUEUE_STREAM, CONSUMER_GROUP, message_id)
 
@@ -164,8 +201,10 @@ async def retry(queued: QueuedJob, error: str, *, redis: Redis | None = None) ->
     """
     client = redis or get_redis()
     attempts = queued.attempts + 1
+    # Ack the failed delivery first; a fresh message (below) carries the retry.
     await ack(queued.message_id, redis=client)
 
+    # Out of attempts: park the job in the dead-letter stream for inspection.
     if attempts >= MAX_ATTEMPTS:
         await client.xadd(
             DEAD_LETTER_STREAM,
@@ -181,6 +220,7 @@ async def retry(queued: QueuedJob, error: str, *, redis: Redis | None = None) ->
         )
         return False
 
+    # Otherwise put it back on the main stream with the bumped attempt count.
     await client.xadd(
         QUEUE_STREAM, {"job": queued.job.model_dump_json(), "attempts": str(attempts)}
     )
@@ -195,6 +235,7 @@ async def depth(*, redis: Redis | None = None) -> dict[str, int]:
     """Queue depth and dead-letter size — design §41 observability."""
     client = redis or get_redis()
     try:
+        # "pending" = delivered to a worker but not yet acknowledged.
         pending = await client.xpending(QUEUE_STREAM, CONSUMER_GROUP)
         return {
             "length": await client.xlen(QUEUE_STREAM),
@@ -202,6 +243,7 @@ async def depth(*, redis: Redis | None = None) -> dict[str, int]:
             "dead_letter": await client.xlen(DEAD_LETTER_STREAM),
         }
     except Exception:
+        # Monitoring must never crash on a Redis hiccup; report an empty queue.
         return {"length": 0, "pending": 0, "dead_letter": 0}
 
 
@@ -212,6 +254,7 @@ async def dead_letters(limit: int = 50, *, redis: Redis | None = None) -> list[d
         entries = await client.xrange(DEAD_LETTER_STREAM, count=limit)
     except Exception:
         return []
+    # Decode each entry's stored job JSON so the failure can be diagnosed.
     return [
         {
             "message_id": message_id,

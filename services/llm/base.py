@@ -1,5 +1,23 @@
 """The LLM interface the rest of the system depends on (design §54).
 
+Purpose:     Defines the one contract every model backend (stub, Anthropic,
+             OpenAI-compatible) must satisfy, plus the small data types that
+             travel with it (results, tool definitions, tool-call records).
+Why needed:  Without a vendor-neutral interface, agents would import vendor SDKs
+             directly and swapping models would mean rewriting business logic.
+Contains:
+  - `LLMError`        one exception type for every model failure, so callers
+                      never import a vendor SDK just to catch its errors.
+  - `ToolDefinition`  a function the model may call; the handler runs in our
+                      code so scoring numbers never come from the model.
+  - `ToolInvocation`  a record of one tool call, kept for score provenance.
+  - `LLMResult`       parsed JSON plus model name and token counts.
+  - `LLMProvider`     the Protocol (interface) all backends implement.
+Used by:     evaluation/agents/base.py, evaluation/synthesis.py,
+             evaluation/tools.py, llm/__init__.py and the three providers
+             (llm/stub_provider.py, anthropic_provider.py, openai_provider.py).
+Depends on:  nothing in this project (standard library only), by design.
+
 Nothing outside `services/llm/` imports a vendor SDK or knows a model name.
 Agents ask for "structured JSON matching this schema" and get it; which model
 produced it is a configuration detail (claude.md: "keep the LLM, STT, and
@@ -13,10 +31,10 @@ Two methods:
   agent, which must not do arithmetic itself.
 """
 
-import inspect
-from collections.abc import Callable
-from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+import inspect  # detect whether a tool handler is async
+from collections.abc import Callable  # tool handler type
+from dataclasses import dataclass, field  # result/tool containers
+from typing import Any, Protocol, runtime_checkable  # JSON values and the provider interface
 
 
 class LLMError(RuntimeError):
@@ -49,11 +67,15 @@ class ToolDefinition:
         correct a bad argument instead of the whole turn dying.
         """
         try:
+            # Call the handler with the model's arguments (this is where the real
+            # computation happens, in our code).
             result = self.handler(**arguments)
+            # Handlers may be sync or async; await only when needed.
             if inspect.isawaitable(result):
                 result = await result
             return result
         except Exception as exc:
+            # Hand the error back as data so the model can retry with better input.
             return {"error": f"{type(exc).__name__}: {exc}"}
 
 
@@ -83,6 +105,8 @@ class LLMResult:
 
 @runtime_checkable
 class LLMProvider(Protocol):
+    """What every model backend (stub, Anthropic, OpenAI-compatible) must implement."""
+
     name: str
     model: str
 

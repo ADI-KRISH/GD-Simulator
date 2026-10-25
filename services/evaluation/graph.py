@@ -1,5 +1,34 @@
 """The evaluation workflow as a LangGraph state graph (design §20, §21).
 
+Purpose:     Wires the whole evaluation pipeline into one LangGraph state graph:
+             plan -> (parallel specialists) -> collect -> critic -> optional
+             revise -> aggregate -> (parallel synthesis) -> done.
+Why needed:  The specialist roster is chosen at runtime, so the number of parallel
+             branches isn't known up front; LangGraph's `Send` fan-out and
+             reducers handle that without hand-written collection code. It also
+             gives an inspectable topology and a path to durable resume.
+Contains:
+  - `EvaluationState`     the shared state dict flowing through the graph.
+  - `plan_node`           pick the roster, build shared context and packets.
+  - `fan_out`             one parallel branch per specialist (or per candidate).
+  - `evaluate_node`       run one specialist (never raises; failures are values).
+  - `_tools`              evidence-lookup tools for specialists, if enabled.
+  - `collect_node`        resolve missing / conflicting results via the Supervisor.
+  - `critic_node`         audit each verdict's evidence against the transcript.
+  - `needs_revision`      route: revise once, or go straight to aggregation.
+  - `revise_node`         send flagged verdicts back to their specialist.
+  - `aggregate_node`      the deterministic score (no model runs here).
+  - `fan_out_synthesis`   one synthesis branch per candidate.
+  - `synthesise_node`     the tool-using agent writes one candidate's narrative.
+  - `has_any_output`      route: nothing to aggregate means the job failed.
+  - `build_graph`, `get_graph`, `render_mermaid`  compile / cache / draw the graph.
+  - `run_graph`           run one evaluation and return the final state.
+Used by:     evaluation/service.py (the evaluation job runner) and
+             tests/test_langgraph_engine.py.
+Depends on:  common/config.py, common/contracts.py, evaluation/agents/base.py,
+             agents/definitions.py, aggregator.py, evidence.py, supervisor.py,
+             synthesis.py, tools.py, and metrics/engine.py.
+
 The pipeline design §20 draws is a graph, and this is that graph expressed
 directly:
 
@@ -35,27 +64,27 @@ that calls the same deterministic aggregator as before, and no model runs inside
 it (claude.md invariant 5). Framework or not, the number stays in code.
 """
 
-import logging
-import operator
-from typing import Annotated, Any, TypedDict
+import logging  # node progress logs
+import operator  # operator.add merges list results from parallel nodes
+from typing import Annotated, Any, TypedDict  # graph state typing with reducers
 
-from langgraph.graph import END, START, StateGraph
-from langgraph.types import Send
+from langgraph.graph import END, START, StateGraph  # build the state graph
+from langgraph.types import Send  # dynamic fan-out to one node run per agent
 
-from services.common.config import settings
+from services.common.config import settings  # evaluation strategy, agentic flag
 from services.common.contracts import EvaluationOutput, RollingState, TranscriptSegment
-from services.evaluation.agents.base import AgentRun, run_agent, run_agent_batch
-from services.evaluation.agents.definitions import ALL_AGENTS, select_agents
-from services.evaluation.aggregator import AggregatedScore, aggregate_session
-from services.evaluation.evidence import build_packets, build_shared_context
-from services.evaluation.supervisor import (
+from services.evaluation.agents.base import AgentRun, run_agent, run_agent_batch  # run a specialist
+from services.evaluation.agents.definitions import ALL_AGENTS, select_agents  # agent roster
+from services.evaluation.aggregator import AggregatedScore, aggregate_session  # fixed formula
+from services.evaluation.evidence import build_packets, build_shared_context  # prompt inputs
+from services.evaluation.supervisor import (  # plan resolution and dispatch strategy
     STRATEGY_PER_DIMENSION,
     EvaluationPlanResult,
     resolve,
 )
-from services.evaluation.synthesis import Synthesis, synthesise
-from services.evaluation.tools import TurnRecord, audit_evidence, build_evidence_tools
-from services.metrics.engine import SessionMetrics
+from services.evaluation.synthesis import Synthesis, synthesise  # narrative per candidate
+from services.evaluation.tools import TurnRecord, audit_evidence, build_evidence_tools  # tools
+from services.metrics.engine import SessionMetrics  # measured numbers
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +137,9 @@ class EvaluationState(TypedDict, total=False):
 
 def plan_node(state: EvaluationState) -> dict[str, Any]:
     """Design §21 steps 1–4: choose the roster, build the context and packets."""
+    # Which specialists run depends on the type of discussion.
     agents = select_agents(state["gd_type"])
+    # The context every candidate and agent shares (topic, Observer's understanding).
     context = build_shared_context(
         session_id=state["session_id"],
         topic=state["topic"],
@@ -117,6 +148,7 @@ def plan_node(state: EvaluationState) -> dict[str, Any]:
         participants=state["candidates"],
         state=state["rolling_state"],
     )
+    # One evidence packet per candidate (their lines, metrics, interactions).
     packets = build_packets(state["candidates"], state["segments"], state["metrics"])
 
     logger.info(
@@ -142,11 +174,13 @@ def fan_out(state: EvaluationState) -> list[Send]:
     computed at runtime rather than a set of static edges.
     """
     strategy = state.get("strategy", settings.evaluation_strategy)
+    # Default strategy: one call per specialist covering all candidates (design §49).
     if strategy == STRATEGY_PER_DIMENSION:
         return [
             Send("evaluate", {**state, "agent_name": name, "target": None})
             for name in state["agent_names"]
         ]
+    # Comparison strategy: one call per (specialist, candidate) pair.
     return [
         Send("evaluate", {**state, "agent_name": name, "target": label})
         for name in state["agent_names"]
@@ -166,6 +200,7 @@ async def evaluate_node(state: dict[str, Any]) -> dict[str, Any]:
 
     tools = _tools(state)
 
+    # No target means "score everyone in one call"; otherwise just the named candidate.
     if target is None:
         runs = await run_agent_batch(agent, state["context"], packets, tools)
     else:
@@ -177,6 +212,7 @@ def _tools(state: dict[str, Any]):
     """Evidence tools for the specialists, unless agentic evaluation is switched off."""
     if not settings.evaluation_agentic:
         return None
+    # Tools let a specialist look up turns, quotes and metrics before scoring.
     return build_evidence_tools(state["segments"], state["metrics"], state.get("turns") or [])
 
 
@@ -189,10 +225,12 @@ def collect_node(state: EvaluationState) -> dict[str, Any]:
         conflict-detection logic in two places."""
 
         def __init__(self) -> None:
+            """Expose just the three attributes `resolve` reads from the live state."""
             self.packets = state["packets"]
             self.agents = agents
             self.context = state["context"]
 
+    # Let the Supervisor sort all the runs into usable outputs, failures and conflicts.
     result: EvaluationPlanResult = resolve(_Plan(), state["runs"])
     return {
         "outputs_by_candidate": result.outputs_by_candidate,
@@ -206,8 +244,10 @@ def critic_node(state: EvaluationState) -> dict[str, Any]:
     critic never re-scores, it only says whether a verdict is supported."""
     notes: dict[str, list[str]] = {}
     for run in state["runs"]:
+        # Failed runs have nothing to audit.
         if run.output is None:
             continue
+        # Check the cited evidence really matches what that candidate said.
         issues = audit_evidence(run.output, state["segments"])
         run.critic = issues
         if issues:
@@ -229,11 +269,14 @@ async def revise_node(state: EvaluationState) -> dict[str, Any]:
     keeps the original so the critic can never delete a score.
     """
     tools = _tools(state)
+    # Work on copies so the original outputs survive a failed revision.
     outputs = {k: list(v) for k, v in state["outputs_by_candidate"].items()}
     new_runs: list[AgentRun] = []
     for key, issues in state["critic_notes"].items():
+        # Keys look like "agent/candidate"; split them back into the two parts.
         agent_name, label = key.split("/", 1)
         agent = ALL_AGENTS[agent_name]
+        # Re-ask that specialist about that candidate, including the critic's objections.
         run = await run_agent(
             agent,
             state["context"],
@@ -242,8 +285,10 @@ async def revise_node(state: EvaluationState) -> dict[str, Any]:
             feedback="; ".join(issues),
         )
         run.critic = [f"revised after critic: {'; '.join(issues)}"]
+        # A failed revision keeps the original verdict.
         if run.output is None:
             continue
+        # Swap the revised verdict in for the one it replaces (same dimension).
         outputs[label] = [
             run.output if o.dimension == agent.dimension else o for o in outputs.get(label, [])
         ]
@@ -257,11 +302,20 @@ def aggregate_node(state: EvaluationState) -> dict[str, Any]:
     This is the boundary the whole system is built around: everything before it
     is inference, everything from here is arithmetic (claude.md invariant 5).
     """
-    return {
-        "scores": aggregate_session(
-            state["outputs_by_candidate"], state["weights"], state.get("interruptions")
-        )
-    }
+    # Hand the validated per-dimension outputs to the fixed-formula aggregator.
+    scores = aggregate_session(
+        state["outputs_by_candidate"], state["weights"], state.get("interruptions")
+    )
+    # Anything the critic flagged that revision did not fix goes to a human; the
+    # number is untouched, only the review flag is raised.
+    for label, outputs in state["outputs_by_candidate"].items():
+        left = sum(len(audit_evidence(o, state["segments"])) for o in outputs)
+        if left and label in scores:
+            scores[label].needs_human_review = True
+            scores[label].review_reasons.append(
+                f"{left} evidence problem(s) left after critic review"
+            )
+    return {"scores": scores}
 
 
 def fan_out_synthesis(state: EvaluationState) -> list[Send]:
@@ -275,6 +329,8 @@ async def synthesise_node(state: dict[str, Any]) -> dict[str, Any]:
     """The tool-using agent writes one candidate's narrative (design §20)."""
     label = state["candidate"]
     score = state["scores"][label]
+    # The narrative explains the already-computed score; it can read it via tools
+    # but never change it.
     result = await synthesise(
         label,
         state["outputs_by_candidate"].get(label, []),
@@ -311,6 +367,7 @@ def build_graph(checkpointer: Any | None = None):
     """
     graph = StateGraph(EvaluationState)
 
+    # Register the steps...
     graph.add_node("plan", plan_node)
     graph.add_node("evaluate", evaluate_node)
     graph.add_node("collect", collect_node)
@@ -319,6 +376,7 @@ def build_graph(checkpointer: Any | None = None):
     graph.add_node("aggregate", aggregate_node)
     graph.add_node("synthesise", synthesise_node)
 
+    # ...then the order they run in (conditional edges are the branch points).
     graph.add_edge(START, "plan")
     graph.add_conditional_edges("plan", fan_out, ["evaluate"])
     graph.add_edge("evaluate", "collect")
@@ -346,7 +404,9 @@ _compiled = None
 
 
 def get_graph():
+    """The compiled evaluation graph, built once and reused."""
     global _compiled
+    # Lazy build: compile on first use, then reuse the same object.
     if _compiled is None:
         _compiled = build_graph()
     return _compiled
@@ -391,6 +451,7 @@ async def run_graph(
     checkpointer (`langgraph-checkpoint-postgres`) pointed at the same Postgres
     the rest of the system uses.
     """
+    # The starting state: all inputs, plus empty accumulators for the reducers.
     initial: EvaluationState = {
         "session_id": session_id,
         "topic": topic,

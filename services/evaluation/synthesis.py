@@ -1,5 +1,27 @@
 """The Final Synthesis agent (design §20 "Final Evaluator", §29, §53).
 
+Purpose:     Writes each candidate's personal feedback narrative (summary, how
+             the scores fit together, strengths, focus areas, per-dimension
+             explanations) after the score has already been computed.
+Why needed:  The fixed formula gives a number but not advice. This agent adds the
+             human-readable "what it means and what to do next", while being
+             structurally unable to change the score: it only reads it through
+             tools that take no numeric input (claude.md invariant 5).
+Contains:
+  - `SYNTHESIS_PROMPT_VERSION`, `SYNTHESIS_MAX_TOKENS`, `SYSTEM_PROMPT`,
+    `RESPONSE_SCHEMA`   the versioned instructions and required JSON shape.
+  - `Synthesis`         the narrative container (+ `to_dict`, `unavailable`).
+  - `build_tools`       `compute_final_score` and `score_if` (what-if), both
+                        backed by the real aggregator.
+  - `build_prompt`      verdicts + measured behaviour + the candidate's own lines.
+  - `silent_synthesis`  a fixed, encouraging narrative for candidates who said nothing.
+  - `_openings_block`, `openings_for`, `own_lines_for`, `_clean_items`  prompt and
+        output helpers.
+  - `synthesise`        run the agent for one candidate; never raises.
+Used by:     evaluation/graph.py, evaluation/service.py, tests/test_synthesis.py.
+Depends on:  common/contracts.py, evaluation/aggregator.py (the real score math),
+             llm/__init__.py (the model), llm/base.py (`ToolDefinition`).
+
 The last stage of the pipeline, and the one place a model is allowed a holistic
 view of a candidate. It reads all five dimension verdicts plus the measured
 behaviour and writes the narrative: what the numbers mean together, what to work
@@ -24,14 +46,14 @@ Every tool call is recorded, so a score's narrative is auditable: you can show
 exactly what the model asked and what it was told.
 """
 
-import logging
-from dataclasses import asdict, dataclass, field
-from typing import Any
+import logging  # warn when synthesis falls back
+from dataclasses import asdict, dataclass, field  # Synthesis container and dict export
+from typing import Any  # JSON-like tool results
 
 from services.common.contracts import CandidateMetrics, EvaluationOutput
-from services.evaluation.aggregator import AggregatedScore, aggregate_candidate
-from services.llm import get_llm_provider
-from services.llm.base import ToolDefinition
+from services.evaluation.aggregator import AggregatedScore, aggregate_candidate  # score math
+from services.llm import get_llm_provider  # model that writes the narrative
+from services.llm.base import ToolDefinition  # tools the model may call for numbers
 
 logger = logging.getLogger(__name__)
 
@@ -240,6 +262,7 @@ class Synthesis:
     error: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """The synthesis as a plain dict."""
         return asdict(self)
 
     @classmethod
@@ -272,6 +295,7 @@ def build_tools(
     """
 
     def _explain(score: AggregatedScore) -> dict[str, Any]:
+        """A score rendered as a plain dict the model can read from a tool result."""
         return {
             "candidate": score.candidate_label,
             "overall_out_of_100": score.overall,
@@ -283,9 +307,12 @@ def build_tools(
         }
 
     def compute_final_score() -> dict[str, Any]:
+        """Tool: the candidate's real final score, computed in code, never by the model."""
         return _explain(aggregate_candidate(candidate_label, outputs, weights))
 
     def score_if(dimension: str, hypothetical_score: float) -> dict[str, Any]:
+        """Tool: what the final score would be if one dimension scored differently."""
+        # Reject bad arguments with a readable error the model can correct.
         if dimension not in weights:
             return {
                 "error": f"unknown dimension {dimension!r}",
@@ -309,6 +336,7 @@ def build_tools(
                 evidence=[],
             )
         )
+        # Score the real and the what-if versions with the same aggregator and compare.
         actual = aggregate_candidate(candidate_label, outputs, weights)
         hypothetical = aggregate_candidate(candidate_label, adjusted, weights)
         return {
@@ -365,6 +393,7 @@ def build_prompt(
     """Dimension verdicts plus measured behaviour. Deliberately no numbers for
     the overall score — that is what the tool is for. `openings`: for a quiet
     candidate, the questions others put to the group (rule 14)."""
+    # One text block per dimension: score, confidence, strengths/weaknesses, evidence.
     blocks = []
     for output in sorted(outputs, key=lambda o: o.dimension):
         evidence = "\n".join(f"      {e.timestamp} {e.summary}" for e in output.evidence)
@@ -414,6 +443,7 @@ QUIET_SHARE = 0.10
 def silent_synthesis(openings: list[str]) -> Synthesis:
     """The narrative for a candidate who said nothing (M14 EC-14.1): encouraging,
     and built on the openings they had — never on what they "failed" to show."""
+    # Quote the first opening (timestamp + question) when there is one.
     first = openings[0].strip() if openings else ""
     moment = (
         f" The first came at {first.split(' ', 1)[0]}: \"{first.split(' ', 1)[1]}\""
@@ -455,6 +485,8 @@ def silent_synthesis(openings: list[str]) -> Synthesis:
 
 
 def _openings_block(openings: list[str] | None) -> str:
+    """Prompt text listing the moments others turned to this candidate (empty if none)."""
+    # No openings means the section is omitted entirely.
     if not openings:
         return ""
     return (
@@ -465,11 +497,13 @@ def _openings_block(openings: list[str] | None) -> str:
 
 def openings_for(candidate_label: str, metrics: CandidateMetrics, segments: list[Any]) -> list[str]:
     """For a quiet candidate only: the questions others asked, with timestamps."""
+    # Anyone who spoke a reasonable amount isn't "quiet": no openings needed.
     if metrics.turns > 0 and metrics.participation_ratio > QUIET_SHARE:
         return []
     found: list[str] = []
     for segment in segments:
         text = (getattr(segment, "text", "") or "").strip()
+        # An opening = someone else's line that asks a question.
         if getattr(segment, "candidate_id", None) == candidate_label or "?" not in text:
             continue
         start = float(getattr(segment, "start", 0.0))
@@ -482,11 +516,13 @@ def openings_for(candidate_label: str, metrics: CandidateMetrics, segments: list
 def own_lines_for(candidate_label: str, segments: list[Any]) -> list[str]:
     """The candidate's own transcript lines, timestamped, so advice can quote them."""
     lines = []
+    # Chronological, non-empty lines by this candidate, each stamped mm:ss.
     for seg in sorted(segments, key=lambda s: s.start):
         if seg.candidate_id != candidate_label or not seg.text.strip():
             continue
         minutes, seconds = divmod(int(seg.start), 60)
         lines.append(f'  {minutes:02d}:{seconds:02d} "{seg.text.strip()[:MAX_LINE_CHARS]}"')
+    # Too many lines: keep the start and end, drop the middle, to bound the prompt size.
     if len(lines) > MAX_OWN_LINES:
         lines = lines[: MAX_OWN_LINES // 2] + lines[-(MAX_OWN_LINES // 2) :]
     return lines
@@ -494,8 +530,10 @@ def own_lines_for(candidate_label: str, segments: list[Any]) -> list[str]:
 
 def _clean_items(raw: Any, keys: tuple[str, ...]) -> list[dict[str, str]]:
     """Keep well-formed items only; a malformed one is dropped, never fatal."""
+    # Anything that isn't a list yields no items rather than an error.
     if not isinstance(raw, list):
         return []
+    # Coerce values to strings; require the first key so empty shells are dropped.
     return [
         {key: str(item.get(key, "")) for key in keys}
         for item in raw
@@ -516,6 +554,7 @@ async def synthesise(
     A failure here costs the narrative and nothing else — the score, dimensions
     and evidence are already computed and stored (claude.md invariant 1).
     """
+    # No dimension scores means there is nothing to explain.
     if not outputs:
         return Synthesis.unavailable("no dimension scores to synthesise")
     if metrics.turns == 0:
@@ -526,6 +565,7 @@ async def synthesise(
         return silent_synthesis(openings_for(candidate_label, metrics, segments or []))
 
     provider = get_llm_provider()
+    # Tools bound to this candidate's stored results, so numbers always come from code.
     tools = build_tools(candidate_label, outputs, weights)
 
     try:
@@ -553,6 +593,8 @@ async def synthesise(
         return Synthesis.unavailable(str(exc))
 
     data = result.data
+    # Defensively convert the model's JSON into the typed container (and keep the
+    # tool-call audit trail).
     return Synthesis(
         summary=str(data.get("summary", "")),
         pattern=str(data.get("pattern", "")),

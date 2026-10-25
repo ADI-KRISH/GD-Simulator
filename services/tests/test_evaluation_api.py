@@ -1,5 +1,21 @@
 """Evaluation and report HTTP endpoints (FR-20, FR-30 – FR-32).
 
+Purpose:     API-level tests for `evaluation/router.py`: trigger an evaluation,
+             read status, scores and reports, check who is allowed to see what,
+             and confirm the no-Redis worker fallback.
+Why needed:  A pipeline that works behind a broken response model or a missing
+             permission check is still a broken feature. These tests exercise the
+             real HTTP routes against the in-memory test database.
+Contains:    the `evaluated` fixture (runs a whole session to COMPLETED through
+             the API) and tests for: usable status response, 404 before
+             evaluation, host-only trigger / scores / group report, candidates
+             reading only their own report, history, metrics, idempotent
+             re-evaluation, the synthesis narrative and the database-only worker.
+Used by:     pytest (run with `pytest services/tests/test_evaluation_api.py`).
+Depends on:  evaluation/router.py, evaluation/queue.py and worker.py (under
+             test), session/ repository, service, models and state, and
+             speech/service.py; fixtures from tests/conftest.py.
+
 The pipeline itself is covered in `test_evaluation_pipeline.py`; this covers the
 API surface over it — serialization, access control, and the states a client can
 observe. The response shapes are tested because a working pipeline behind a
@@ -31,15 +47,18 @@ async def evaluated(
 ):
     """A session run to COMPLETED, driven through the HTTP API."""
     session_id = uuid.UUID(gd_session["id"])
+    # Two candidates join the lobby and mark themselves ready...
     for header in (candidate_auth, second_candidate):
         await client.post("/api/v1/lobbies/join", json={"code": gd_session["code"]}, headers=header)
         await client.post(
             f"/api/v1/lobbies/{session_id}/ready", json={"ready": True}, headers=header
         )
+    # ...and the host starts the session.
     await client.post(f"/api/v1/sessions/{session_id}/start", headers=host_auth)
 
     async with session_factory() as db:
         gd = await session_repo.get_session_by_id(db, session_id)
+        # Add a third participant (the host as "C") directly, to get a 3-person group.
         await session_repo.add_participant(
             db,
             Participant(
@@ -51,11 +70,13 @@ async def evaluated(
                 is_ready=True,
             ),
         )
+        # Replay the scripted conversation as speech events plus transcript lines.
         for label, start, end, text in SCRIPT:
             await session_service.record_speech(db, gd, label, float(start), float(end))
             await persist_segment(db, gd.id, label, float(start), float(end), text, 0.92)
         await db.commit()
 
+    # End the session so it becomes eligible for evaluation.
     ended = await client.post(f"/api/v1/sessions/{session_id}/end", headers=host_auth)
     assert ended.status_code == 200, ended.text
     return gd_session
@@ -63,6 +84,7 @@ async def evaluated(
 
 async def test_evaluate_endpoint_returns_a_usable_status(client: AsyncClient, evaluated, host_auth):
     """Regression: the row's primary key is `id`, the wire field is `job_id`."""
+    # run_now=true evaluates inline, so the response reports a finished job.
     response = await client.post(
         f"/api/v1/sessions/{evaluated['id']}/evaluate?run_now=true", headers=host_auth
     )
@@ -82,6 +104,8 @@ async def test_evaluate_endpoint_returns_a_usable_status(client: AsyncClient, ev
 async def test_status_endpoint_matches_the_evaluate_response(
     client: AsyncClient, evaluated, host_auth
 ):
+    """The status endpoint returns the same job as the evaluate call."""
+    # Create the job, then read it back through the status endpoint.
     created = await client.post(
         f"/api/v1/sessions/{evaluated['id']}/evaluate?run_now=true", headers=host_auth
     )
@@ -93,6 +117,8 @@ async def test_status_endpoint_matches_the_evaluate_response(
 async def test_status_is_404_before_any_evaluation(
     client: AsyncClient, gd_session, host_auth, candidate_auth
 ):
+    """Status is 404 until an evaluation exists."""
+    # A lobby with a candidate but no evaluation requested yet.
     await client.post(
         "/api/v1/lobbies/join", json={"code": gd_session["code"]}, headers=candidate_auth
     )
@@ -105,6 +131,8 @@ async def test_status_is_404_before_any_evaluation(
 async def test_only_the_host_can_trigger_an_evaluation(
     client: AsyncClient, evaluated, candidate_auth
 ):
+    """A candidate cannot trigger an evaluation (403)."""
+    # A non-host calling the host-only endpoint must be refused.
     response = await client.post(
         f"/api/v1/sessions/{evaluated['id']}/evaluate", headers=candidate_auth
     )
@@ -114,10 +142,12 @@ async def test_only_the_host_can_trigger_an_evaluation(
 async def test_scores_endpoint_is_host_only(
     client: AsyncClient, evaluated, host_auth, candidate_auth
 ):
+    """Only the host can read all scores."""
     await client.post(
         f"/api/v1/sessions/{evaluated['id']}/evaluate?run_now=true", headers=host_auth
     )
 
+    # Host: sees one score per candidate, each within the 0-100 range with its weights.
     allowed = await client.get(f"/api/v1/sessions/{evaluated['id']}/scores", headers=host_auth)
     assert allowed.status_code == 200
     assert len(allowed.json()) == 3
@@ -125,6 +155,7 @@ async def test_scores_endpoint_is_host_only(
         assert 0 <= score["overall"] <= 100
         assert score["weights"]
 
+    # Candidate: refused.
     refused = await client.get(f"/api/v1/sessions/{evaluated['id']}/scores", headers=candidate_auth)
     assert refused.status_code == 403
 
@@ -136,6 +167,7 @@ async def test_a_candidate_reads_their_own_report(
     await client.post(
         f"/api/v1/sessions/{evaluated['id']}/evaluate?run_now=true", headers=host_auth
     )
+    # The candidate asks for "my report" and must get their own (label A).
     response = await client.get(
         f"/api/v1/sessions/{evaluated['id']}/report", headers=candidate_auth
     )
@@ -152,6 +184,7 @@ async def test_a_candidate_cannot_read_another_candidates_report(
     client: AsyncClient, evaluated, host_auth, candidate_auth
 ):
     """NFR-07 privacy."""
+    # Candidate A tries to open candidate B's report by label: must be forbidden.
     await client.post(
         f"/api/v1/sessions/{evaluated['id']}/evaluate?run_now=true", headers=host_auth
     )
@@ -162,6 +195,7 @@ async def test_a_candidate_cannot_read_another_candidates_report(
 
 
 async def test_the_host_can_read_any_candidates_report(client: AsyncClient, evaluated, host_auth):
+    """The host can open any candidate's report."""
     await client.post(
         f"/api/v1/sessions/{evaluated['id']}/evaluate?run_now=true", headers=host_auth
     )
@@ -178,6 +212,7 @@ async def test_the_group_report_is_host_only(
         f"/api/v1/sessions/{evaluated['id']}/evaluate?run_now=true", headers=host_auth
     )
 
+    # Host: gets the group report with a quality rating and participation numbers.
     allowed = await client.get(
         f"/api/v1/sessions/{evaluated['id']}/report/group", headers=host_auth
     )
@@ -186,6 +221,7 @@ async def test_the_group_report_is_host_only(
     assert body["discussion_quality"] in {"high", "moderate", "low"}
     assert "participation" in body
 
+    # Candidate: refused, because the report names who dominated or stayed silent.
     refused = await client.get(
         f"/api/v1/sessions/{evaluated['id']}/report/group", headers=candidate_auth
     )
@@ -199,6 +235,7 @@ async def test_history_reflects_a_completed_session(
     await client.post(
         f"/api/v1/sessions/{evaluated['id']}/evaluate?run_now=true", headers=host_auth
     )
+    # After one completed evaluation the candidate's history shows exactly that session.
     response = await client.get("/api/v1/me/history", headers=candidate_auth)
 
     assert response.status_code == 200, response.text
@@ -210,6 +247,7 @@ async def test_history_reflects_a_completed_session(
 
 
 async def test_history_is_empty_for_a_new_candidate(client: AsyncClient, candidate_auth):
+    """A new candidate's history is empty."""
     response = await client.get("/api/v1/me/history", headers=candidate_auth)
     assert response.status_code == 200
     assert response.json() == {
@@ -224,12 +262,14 @@ async def test_metrics_endpoint_reports_the_deterministic_numbers(
     client: AsyncClient, evaluated, host_auth
 ):
     """FR-18 over HTTP."""
+    # The metrics are computed from the scripted speech events, not by a model.
     response = await client.get(f"/api/v1/sessions/{evaluated['id']}/metrics", headers=host_auth)
     assert response.status_code == 200, response.text
     body = response.json()
 
     assert body["total_speaking_seconds"] > 0
     assert set(body["candidates"]) == {"A", "B", "C"}
+    # Participation ratios across all candidates must add up to the whole floor.
     total = sum(c["participation_ratio"] for c in body["candidates"].values())
     assert total == pytest.approx(1.0, abs=0.01)
     # A spoke most in the script.
@@ -244,12 +284,14 @@ async def test_evaluating_an_already_completed_session_is_idempotent(
     Whichever arrives second must return the existing result, not fail on
     COMPLETED -> PREPARING. Caught live, where a worker is actually running.
     """
+    # First call does the work...
     first = await client.post(
         f"/api/v1/sessions/{evaluated['id']}/evaluate?run_now=true", headers=host_auth
     )
     assert first.status_code == 200, first.text
     assert first.json()["state"] == "COMPLETED"
 
+    # ...the second must return the same finished job instead of failing or duplicating.
     second = await client.post(
         f"/api/v1/sessions/{evaluated['id']}/evaluate?run_now=true", headers=host_auth
     )
@@ -269,6 +311,7 @@ async def test_the_report_carries_a_synthesis_narrative(
         f"/api/v1/sessions/{evaluated['id']}/report", headers=candidate_auth
     )
 
+    # Pull the narrative section out of the candidate's stored report.
     synthesis = response.json()["body"]["synthesis"]
     assert synthesis["error"] is None
     assert synthesis["summary"]
@@ -288,12 +331,15 @@ async def test_without_redis_the_worker_runs_queued_jobs_from_the_database(
     authority, so the worker must evaluate it straight from the database."""
     from services.evaluation import queue, worker
 
+    # Request (without run_now) so the job sits QUEUED, waiting for a worker.
     queued = await client.post(f"/api/v1/sessions/{evaluated['id']}/evaluate", headers=host_auth)
     assert queued.json()["state"] == "QUEUED"
 
     async def unreachable(*args, **kwargs):
+        """Simulate Redis being unreachable."""
         raise ConnectionError("redis is not running")
 
+    # Break the queue read, then drain: the worker must fall back to the database.
     monkeypatch.setattr(queue, "read", unreachable)
     assert await worker.drain(session_factory) == 1
 

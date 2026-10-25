@@ -8,16 +8,39 @@ follow from that and are enforced here:
 2. Every LLM/agent output is validated before it flows downstream — see
    `validate_agent_output`, which checks the Pydantic model *and* the raw JSON
    Schema, so drift between the two is caught rather than papered over.
+
+Purpose:    runtime models and validators for every data shape that crosses a
+            component boundary (transcript segment, metrics, rolling state,
+            evaluation output, evaluation job).
+Why needed: LLMs return free-form text; without a strict gate a malformed answer
+            would reach the aggregator and silently corrupt a score. This is
+            the single place that rejects bad data so callers can retry.
+Contains:
+    CONTRACTS_DIR, DIMENSIONS, ContractError - schema folder, allowed score
+        dimensions, and the error raised on any violation.
+    load_schema, validate_against_schema - read and apply the canonical JSON Schema.
+    TranscriptSegment, CandidateMetrics, RollingState, EvidenceItem,
+    EvaluationOutput, EvaluationVersions, EvaluationArtifacts, EvaluationJob -
+        the Pydantic contract models (extra fields forbidden).
+    schema_name_for, validate_contract - model-to-schema lookup and the
+        belt-and-braces check against drift.
+    parse_agent_output, parse_rolling_state - the gates every LLM result passes.
+Used by:    evaluation (agents/base, aggregator, evidence, graph, group_synthesis,
+            queue, report, service, supervisor, synthesis, tools), metrics
+            (engine, router), observer (agent, service), speech (chunking,
+            router, service) and the contract/aggregator/observer/synthesis tests.
+Depends on: common/config (REPO_ROOT to find the schema files).
 """
 
-import functools
-import json
-from typing import Any
+import functools  # cache() so each schema file is read from disk once
+import json  # parse schema files and LLM output
+from typing import Any  # loosely-typed JSON payloads
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator  # runtime contract models
 
-from services.common.config import REPO_ROOT
+from services.common.config import REPO_ROOT  # to find claude/docs/contracts
 
+# Folder holding the canonical *.schema.json files.
 CONTRACTS_DIR = REPO_ROOT / "claude" / "docs" / "contracts"
 
 # Dimensions an evaluator agent may report on (evaluation_output.schema.json).
@@ -39,6 +62,7 @@ class ContractError(ValueError):
 def load_schema(name: str) -> dict[str, Any]:
     """Read a JSON Schema from disk. Cached — these files never change at runtime."""
     path = CONTRACTS_DIR / f"{name}.schema.json"
+    # A missing schema is a programming error; fail loudly with the name.
     if not path.exists():
         raise ContractError(f"no contract named {name} in {CONTRACTS_DIR}")
     return json.loads(path.read_text(encoding="utf-8"))
@@ -53,6 +77,7 @@ def validate_against_schema(name: str, payload: dict[str, Any]) -> None:
     """
     import jsonschema
 
+    # Re-raise jsonschema's error as our ContractError so callers catch one type.
     try:
         jsonschema.validate(payload, load_schema(name))
     except jsonschema.ValidationError as exc:
@@ -77,12 +102,15 @@ class TranscriptSegment(BaseModel):
 
     @model_validator(mode="after")
     def check_interval(self) -> "TranscriptSegment":
+        """Reject a segment that ends before it starts."""
+        # A negative-length segment would corrupt speaking-time metrics.
         if self.end < self.start:
             raise ValueError("segment end must be >= start")
         return self
 
     @property
     def duration(self) -> float:
+        """Length of the segment in seconds."""
         return self.end - self.start
 
 
@@ -134,6 +162,8 @@ class RollingState(BaseModel):
 
 
 class EvidenceItem(BaseModel):
+    """One timestamped quote or observation backing a score."""
+
     model_config = ConfigDict(extra="forbid")
 
     timestamp: str
@@ -160,6 +190,7 @@ class EvaluationOutput(BaseModel):
 
     @model_validator(mode="after")
     def check_dimension(self) -> "EvaluationOutput":
+        """Reject a dimension name outside the rubric's fixed set."""
         if self.dimension not in DIMENSIONS:
             raise ValueError(f"unknown dimension {self.dimension!r}")
         return self
@@ -176,6 +207,8 @@ class EvaluationVersions(BaseModel):
 
 
 class EvaluationArtifacts(BaseModel):
+    """References to the stored inputs an evaluation job was built from."""
+
     model_config = ConfigDict(extra="forbid")
 
     transcript_ref: str | None = None
@@ -203,9 +236,11 @@ class EvaluationJob(BaseModel):
 
     @property
     def idempotency_key(self) -> str:
+        """Key that makes re-delivering the same job a no-op."""
         return f"{self.session_id}:{self.evaluation_version}"
 
 
+# Which schema file validates each model.
 _SCHEMA_FOR: dict[type[BaseModel], str] = {
     TranscriptSegment: "transcript_segment",
     CandidateMetrics: "candidate_metrics",
@@ -216,6 +251,7 @@ _SCHEMA_FOR: dict[type[BaseModel], str] = {
 
 
 def schema_name_for(model: type[BaseModel]) -> str:
+    """Look up the JSON Schema name for a contract model."""
     name = _SCHEMA_FOR.get(model)
     if name is None:
         raise ContractError(f"{model.__name__} has no contract file")
@@ -229,6 +265,7 @@ def validate_contract(instance: BaseModel) -> BaseModel:
     drifted apart, which is exactly the failure the contracts README warns
     about.
     """
+    # Dump to plain JSON first so the schema sees exactly what would be stored.
     payload = json.loads(instance.model_dump_json(exclude_none=True))
     validate_against_schema(schema_name_for(type(instance)), payload)
     return instance
@@ -241,6 +278,7 @@ def parse_agent_output(raw: Any) -> EvaluationOutput:
     `ContractError` the caller retries on. Nothing unvalidated reaches the
     aggregator (contracts README, "Validation gate").
     """
+    # Step 1: accept raw text or an already-parsed object, but it must be a JSON object.
     if isinstance(raw, str):
         try:
             raw = json.loads(raw)
@@ -249,17 +287,20 @@ def parse_agent_output(raw: Any) -> EvaluationOutput:
     if not isinstance(raw, dict):
         raise ContractError(f"agent output must be a JSON object, got {type(raw).__name__}")
 
+    # Step 2: check the Pydantic model (types, ranges, known dimension).
     try:
         output = EvaluationOutput.model_validate(raw)
     except Exception as exc:
         raise ContractError(f"agent output failed the evaluation_output contract: {exc}") from exc
 
+    # Step 3: check the canonical JSON Schema too, to catch model/schema drift.
     validate_contract(output)
     return output
 
 
 def parse_rolling_state(raw: Any, session_id: str) -> RollingState:
     """Validation gate for Observer Agent output (claude.md conventions)."""
+    # Accept text or an object, but insist on a JSON object either way.
     if isinstance(raw, str):
         try:
             raw = json.loads(raw)
@@ -271,6 +312,7 @@ def parse_rolling_state(raw: Any, session_id: str) -> RollingState:
     # The model is told the session id; it is not trusted to echo it back.
     raw = dict(raw)
     raw["session_id"] = session_id
+    # Validate with the Pydantic model, then against the canonical schema.
     try:
         state = RollingState.model_validate(raw)
     except Exception as exc:

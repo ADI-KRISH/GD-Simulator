@@ -1,13 +1,36 @@
 """The specialist roster and dynamic selection (design §22, §24–§29).
 
+Purpose:     Declares the six evaluator specialists (content, communication,
+             leadership, collaboration, critical thinking, behavior) with the
+             instructions and scoring rubric each one gives the model, and says
+             which of them run for each type of group discussion.
+Why needed:  The rubric text IS the evaluation policy. Keeping it in one data
+             file (not scattered through code) lets it be reviewed and versioned,
+             and the GD-type table is what makes the pipeline "agentic": the
+             Supervisor picks a roster instead of running a fixed script.
+Contains:
+  - `CONTENT`, `COMMUNICATION`, `LEADERSHIP`, `COLLABORATION`,
+    `CRITICAL_THINKING`, `BEHAVIOR`  one `EvaluatorAgent` each (what to judge and
+                                      how to score it, including what NOT to reward).
+  - `ALL_AGENTS`        name -> agent lookup.
+  - `AGENTS_BY_GD_TYPE` which agent names run for technical / leadership /
+                        HR-social / general discussions.
+  - `select_agents`    turns a GD type into the list of agents to run.
+Used by:     evaluation/supervisor.py (plans the roster), evaluation/graph.py,
+             evaluation/service.py, and tests (test_evaluation_pipeline.py,
+             test_evaluation_batching.py, test_langgraph_engine.py,
+             test_llm_providers.py).
+Depends on:  evaluation/agents/base.py (`EvaluatorAgent`), session/models.py
+             (`GDType`).
+
 Each agent's `focus` and `rubric` are lifted from the design's description of
 that agent, including the parts that say what *not* to reward — design §26 is
 explicit that "speaking most = leadership" is the wrong model, and the rubric
 says so in as many words rather than hoping the model infers it.
 """
 
-from services.evaluation.agents.base import EvaluatorAgent
-from services.session.models import GDType
+from services.evaluation.agents.base import EvaluatorAgent  # the specialist definition type
+from services.session.models import GDType  # session types that pick which agents run
 
 CONTENT = EvaluatorAgent(
     name="content",
@@ -137,6 +160,7 @@ was talked over before penalising them for silence.""",
     metrics_led=True,
 )
 
+# Name -> agent lookup used when the roster table below refers to agents by name.
 ALL_AGENTS: dict[str, EvaluatorAgent] = {
     agent.name: agent
     for agent in (CONTENT, COMMUNICATION, LEADERSHIP, COLLABORATION, CRITICAL_THINKING, BEHAVIOR)
@@ -172,5 +196,7 @@ AGENTS_BY_GD_TYPE: dict[str, tuple[str, ...]] = {
 
 def select_agents(gd_type: str) -> list[EvaluatorAgent]:
     """Which specialists to run for this GD (design §22)."""
+    # Unknown types fall back to the general roster rather than failing the job.
     names = AGENTS_BY_GD_TYPE.get(gd_type, AGENTS_BY_GD_TYPE[GDType.GENERAL])
+    # Resolve names to the agent objects the dispatcher needs.
     return [ALL_AGENTS[name] for name in names]

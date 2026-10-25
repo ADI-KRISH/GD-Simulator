@@ -30,6 +30,7 @@ NAMES = {"P1": "Arjun", "P2": "Bhavana", "P3": "Chitra", "A": "Asha Rao"}
 
 
 def _metrics(turns: int, ratio: float) -> CandidateMetrics:
+    """Metrics for candidate A with the given turns and participation ratio."""
     return CandidateMetrics(
         session_id="s", candidate_id="A", speaking_seconds=ratio * 100, participation_ratio=ratio,
         turns=turns, interruptions=0, responses=0, questions=0,
@@ -37,6 +38,7 @@ def _metrics(turns: int, ratio: float) -> CandidateMetrics:
 
 
 def _score() -> AggregatedScore:
+    """A fixed low score for candidate A."""
     return AggregatedScore(
         candidate_label="A", overall=12.0, dimensions={"communication": 1.2},
         weights={"communication": 1.0}, confidence=0.5, needs_human_review=False,
@@ -44,6 +46,7 @@ def _score() -> AggregatedScore:
 
 
 def test_entry_moments_are_the_lines_that_named_the_candidate():
+    """Entry moments are the lines where others turned to the candidate by name."""
     moments = entry_moments(SEGMENTS, "A", "Asha Rao", NAMES)
     assert [(m["timestamp"], m["speaker"]) for m in moments] == [
         ("0:04", "Chitra"),
@@ -52,6 +55,7 @@ def test_entry_moments_are_the_lines_that_named_the_candidate():
 
 
 def test_a_silent_candidates_debrief_is_about_getting_in():
+    """A silent candidate's feedback focuses on how to come into the discussion."""
     moments = entry_moments(SEGMENTS, "A", "Asha Rao", NAMES)
     report = build_candidate_report(
         "A", "Asha Rao", _score(), [], _metrics(0, 0.0), moments=moments
@@ -67,6 +71,7 @@ def test_a_silent_candidates_debrief_is_about_getting_in():
 
 
 def test_a_quiet_candidate_is_not_told_their_points_landed():
+    """A quiet candidate is not told their points landed."""
     report = build_candidate_report("A", "Asha Rao", _score(), [], _metrics(2, 0.05))
     joined = " ".join(report.weaknesses)
     assert "less than an even share" in joined
@@ -87,6 +92,7 @@ def test_a_quiet_candidates_synthesis_is_given_the_openings():
 
 
 def test_an_active_candidate_gets_no_openings_block():
+    """An active candidate gets no 'openings' section."""
     from services.evaluation.synthesis import openings_for
 
     assert openings_for("A", _metrics(6, 0.4), SEGMENTS) == []

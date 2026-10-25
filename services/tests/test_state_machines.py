@@ -55,6 +55,7 @@ def test_readiness_is_revocable_before_start():
     ],
 )
 def test_illegal_session_transitions_are_rejected(current, target):
+    """Each illegal session transition raises InvalidStateTransition."""
     with pytest.raises(InvalidStateTransition):
         transition_session(current, target)
 
@@ -77,6 +78,7 @@ def test_failed_recovers_through_retrying():
 
 
 def test_completed_is_terminal():
+    """COMPLETED has no outgoing transitions."""
     assert SESSION_TRANSITIONS[SessionState.COMPLETED] == set()
     assert not can_transition_session(SessionState.COMPLETED, SessionState.LIVE)
 
@@ -98,6 +100,7 @@ def test_participant_disconnect_reconnect_cycle():
 
 
 def test_participant_may_unready():
+    """A READY participant can go back to JOINED."""
     assert (
         transition_participant(ParticipantState.READY, ParticipantState.JOINED)
         is ParticipantState.JOINED
@@ -105,12 +108,14 @@ def test_participant_may_unready():
 
 
 def test_left_is_terminal_for_participants():
+    """A participant who LEFT cannot rejoin."""
     assert PARTICIPANT_TRANSITIONS[ParticipantState.LEFT] == set()
     with pytest.raises(InvalidStateTransition):
         transition_participant(ParticipantState.LEFT, ParticipantState.JOINED)
 
 
 def test_participant_cannot_skip_straight_to_active():
+    """JOINED cannot jump to ACTIVE without being READY."""
     with pytest.raises(InvalidStateTransition):
         transition_participant(ParticipantState.JOINED, ParticipantState.ACTIVE)
 
@@ -131,6 +136,7 @@ def test_evaluation_happy_path():
 
 
 def test_evaluation_may_fail_from_any_state_and_requeue():
+    """An evaluation may fail from any state and be queued again."""
     assert (
         transition_evaluation(EvaluationState.RUNNING, EvaluationState.FAILED)
         is EvaluationState.FAILED
