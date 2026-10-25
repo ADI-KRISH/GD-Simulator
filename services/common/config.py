@@ -156,6 +156,9 @@ class Settings(BaseSettings):
     evaluation_strategy: str = "per_dimension"
     # Specialists use evidence tools and a critic audits them (vs. one-shot prompts).
     evaluation_agentic: bool = True
+    # Privacy: delete a session's raw audio once its evaluation has completed.
+    # Transcripts, scores and reports are kept.
+    delete_audio_after_evaluation: bool = True
     # Deterministic score penalty per interruption a candidate made, and its cap.
     interruption_penalty_points: float = 2.0
     interruption_penalty_cap: float = 15.0

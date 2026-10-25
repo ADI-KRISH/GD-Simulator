@@ -54,6 +54,10 @@ class ObjectStore(Protocol):
         """Return True if an object is stored under `key`."""
         ...
 
+    async def delete(self, key: str) -> None:
+        """Remove the object under `key`; a missing object is not an error."""
+        ...
+
 
 class FilesystemStore:
     """Local-disk store used when MinIO is not running.
@@ -95,6 +99,10 @@ class FilesystemStore:
     async def exists(self, key: str) -> bool:
         """Check whether a file exists for `key`."""
         return self._path(key).exists()
+
+    async def delete(self, key: str) -> None:
+        """Remove the file for `key` if it is there."""
+        self._path(key).unlink(missing_ok=True)
 
 
 class MinioStore:
@@ -145,6 +153,11 @@ class MinioStore:
         async with await self._client() as client:
             response = await client.head(f"/{self._bucket}/{key}")
             return response.status_code == 200
+
+    async def delete(self, key: str) -> None:
+        """Delete the object; S3/MinIO answer 204 whether or not it existed."""
+        async with await self._client() as client:
+            (await client.delete(f"/{self._bucket}/{key}")).raise_for_status()
 
 
 # Process-wide singleton, created on first use by get_object_store().

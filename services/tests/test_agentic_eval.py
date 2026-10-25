@@ -42,3 +42,28 @@ def test_agreement_and_evidence_accuracy():
     got = agreement({"A": {"content": 6, "leadership": 4}}, {"A": {"content": 7, "leadership": 4}})
     assert got["mae"] == 0.5 and got["within_1"] == 1.0
     assert evidence_accuracy([_out("ok"), _out('said "never uttered this phrase"')], SEGS) == 0.5
+
+
+async def test_purge_audio_deletes_files_and_rows(gd_session, session_factory, tmp_path):
+    import uuid
+
+    from services.common.storage import FilesystemStore, set_object_store
+    from services.evaluation.service import purge_audio
+    from services.speech import repository as speech_repo
+    from services.speech.models import AudioChunk
+
+    store = FilesystemStore(tmp_path)
+    set_object_store(store)
+    sid = uuid.UUID(gd_session["id"])
+    try:
+        async with session_factory() as db:
+            await store.put("a/1.webm", b"x")
+            await speech_repo.add_audio_chunk(
+                db, AudioChunk(session_id=sid, candidate_label="A", sequence=0, start=0, end=5,
+                               storage_key="a/1.webm")
+            )
+            await purge_audio(db, sid)
+            assert not await store.exists("a/1.webm")
+            assert await speech_repo.list_audio_chunks(db, sid) == []
+    finally:
+        set_object_store(None)

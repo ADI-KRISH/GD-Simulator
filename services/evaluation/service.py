@@ -69,6 +69,7 @@ from services.common.contracts import (
 )
 from services.common.errors import ConflictError, NotFoundError  # 409 / 404
 from services.common.events import Event, publish  # announce evaluation.* events
+from services.common.storage import get_object_store  # delete raw audio after evaluation
 from services.evaluation import queue  # enqueue jobs for the worker
 from services.evaluation import repository as repo  # job/score/report data access
 from services.evaluation.agents.definitions import select_agents  # agents for the GD type
@@ -100,6 +101,7 @@ from services.session.state import (  # state machines
     transition_evaluation,
     transition_session,
 )
+from services.speech import repository as speech_repo  # audio chunk rows
 from services.speech.service import get_transcript  # the raw transcript
 
 logger = logging.getLogger(__name__)
@@ -528,6 +530,8 @@ async def run_job(session: AsyncSession, job: EvaluationJob) -> EvaluationJob:
         gd.state = str(transition_session(SessionState.EVALUATING, SessionState.COMPLETED))
     await session.flush()
     await _increment_sessions_completed(session, list(user_ids.values()))
+    if settings.delete_audio_after_evaluation:
+        await purge_audio(session, gd.id)
 
     # Tell the rest of the system: event bus, in-app notifications, then the live room.
     await publish(
@@ -581,6 +585,23 @@ async def run_job(session: AsyncSession, job: EvaluationJob) -> EvaluationJob:
         await session.commit()
         await platform_skill_graph.send_results(str(gd.id), scores, segments, subjects)
     return job
+
+
+async def purge_audio(session: AsyncSession, session_id: uuid.UUID) -> None:
+    """Delete a finished session's raw audio (files and rows); best effort.
+
+    The transcript already holds what was said, so the recording is no longer
+    needed. A storage hiccup must never fail a completed evaluation.
+    """
+    store = get_object_store()
+    for chunk in await speech_repo.list_audio_chunks(session, session_id):
+        try:
+            await store.delete(chunk.storage_key)
+        except Exception:
+            logger.warning("audio delete failed", extra={"key": chunk.storage_key}, exc_info=True)
+            continue
+        await session.delete(chunk)
+    await session.flush()
 
 
 async def _platform_subjects(

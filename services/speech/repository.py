@@ -84,6 +84,12 @@ async def add_audio_chunk(session: AsyncSession, chunk: AudioChunk) -> AudioChun
     return chunk
 
 
+async def list_audio_chunks(session: AsyncSession, session_id: uuid.UUID) -> list[AudioChunk]:
+    """Every audio chunk recorded for a session."""
+    result = await session.execute(select(AudioChunk).where(AudioChunk.session_id == session_id))
+    return list(result.scalars())
+
+
 async def list_failed_audio_chunks(session: AsyncSession, limit: int = 50) -> list[AudioChunk]:
     """Retry candidates for the STT reprocessing path (design §38)."""
     # Oldest failures first, capped by limit so a retry pass stays bounded.
