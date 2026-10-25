@@ -1,14 +1,14 @@
 "use client";
 
-import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useState } from "react";
+import Link from "next/link";  // client-side navigation link
+import { useRouter } from "next/navigation";  // go to the lobby after creating
+import { useState } from "react";  // form state
 
-import { Icon } from "@/app/icons";
-import { Select } from "@/app/select";
-import { ApiError, sessions } from "@/lib/api";
-import { useAuth } from "@/lib/auth-context";
-import type { Difficulty, GDType } from "@/lib/types";
+import { Icon } from "@/app/icons";  // icon set
+import { Select } from "@/app/select";  // styled dropdown
+import { ApiError, sessions } from "@/lib/api";  // create the session
+import { useAuth } from "@/lib/auth-context";  // require sign-in
+import type { Difficulty, GDType } from "@/lib/types";  // difficulty and GD type
 
 /**
  * FR-03 — GD creation.
@@ -40,6 +40,7 @@ const GD_TYPES: { value: GDType; label: string; agents: string }[] = [
   },
 ];
 
+/** Suggested topics for the "Suggest a topic" button. */
 const TOPIC_IDEAS = [
   "Should remote work be the future of the tech industry?",
   "Should governments regulate generative AI?",
@@ -53,9 +54,12 @@ const TOPIC_IDEAS = [
   "Should there be a cap on gig workers' platform commissions?",
 ];
 
+/** Turn minute values into Select options. */
 const minutes = (values: number[]) => values.map((m) => ({ value: m, label: `${m} minutes` }));
+/** Turn participant counts into Select options. */
 const counts = (values: number[]) => values.map((n) => ({ value: n, label: `${n}` }));
 
+/** Form to create a group discussion lobby (topic, timing, size, type, difficulty). */
 export default function NewSessionPage() {
   const router = useRouter();
   const { user, loading } = useAuth();
@@ -78,12 +82,14 @@ export default function NewSessionPage() {
   if (loading) return <p className="empty">Loading…</p>;
   if (!user) return <p className="empty">Sign in to create a discussion.</p>;
 
+  /** Fill the topic box with a random idea (never the same one twice in a row). */
   function suggestTopic() {
     const next = (ideaIndex + 1 + Math.floor(Math.random() * (TOPIC_IDEAS.length - 1))) % TOPIC_IDEAS.length;
     setIdeaIndex(next);
     setForm((prev) => ({ ...prev, topic: TOPIC_IDEAS[next] }));
   }
 
+  /** Create the session and open its lobby. */
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     setBusy(true);

@@ -2,9 +2,9 @@
 
 /** Building blocks of the Arena: orbs, the round table, the ring clock, notices. */
 
-import type { CSSProperties, ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";  // style and children types
 
-import type { TurnNotice } from "@/lib/use-session-socket";
+import type { TurnNotice } from "@/lib/use-session-socket";  // notice type for interruption toasts
 
 /** A stable hue per label, spread around the wheel and kept clear of amber. */
 export function hueFor(label: string): number {
@@ -14,6 +14,7 @@ export function hueFor(label: string): number {
   return hue > 20 && hue < 60 ? hue + 70 : hue;
 }
 
+/** Everything needed to draw one participant: name, speaking state, voice level and badges. */
 export interface SeatInfo {
   label: string;
   name: string;
@@ -30,6 +31,10 @@ export interface SeatInfo {
   hue?: number;
 }
 
+/**
+ * A round avatar that swells with the voice level; shows initials, an AI badge and an
+ * interruption counter.
+ */
 export function Orb({ seat, children }: { seat: SeatInfo; children?: ReactNode }) {
   const style = {
     "--h": seat.hue ?? hueFor(seat.label),
@@ -95,6 +100,7 @@ export function RoundTable({
   );
 }
 
+/** A circular countdown timer that drains as time runs out. */
 export function RingClock({
   seconds,
   duration,
@@ -126,6 +132,7 @@ export function RingClock({
   );
 }
 
+/** Short toasts for interruptions and replies (newest three). */
 export function Notices({
   notices,
   nameOf,
@@ -154,6 +161,7 @@ export function Notices({
   );
 }
 
+/** Top bar of the live room: topic, phase label and the countdown timer. */
 export function ArenaHeader({
   topic,
   phaseLabel,
@@ -201,6 +209,7 @@ export function ArenaHeader({
   );
 }
 
+/** Format seconds as m:ss. */
 function clockOf(seconds: number): string {
   const whole = Math.max(0, Math.round(seconds));
   return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;

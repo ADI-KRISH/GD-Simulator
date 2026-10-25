@@ -9,13 +9,17 @@
  * React state: it is large and has no business in the render path.
  */
 
-import { useSyncExternalStore } from "react";
+import { useSyncExternalStore } from "react";  // subscribe components to the mute setting
 
+/** localStorage key for the mute-AI-voices preference. */
 const MUTE_KEY = "gd-arena-mute-ai-voices";
 
+/** Current mute state, shared by every component. */
 let muted = readMuted();
+/** Components subscribed to mute changes. */
 const listeners = new Set<() => void>();
 
+/** Read the saved mute preference (false if storage is unavailable). */
 function readMuted(): boolean {
   try {
     return window.localStorage.getItem(MUTE_KEY) === "1";
@@ -24,6 +28,7 @@ function readMuted(): boolean {
   }
 }
 
+/** Set and persist the mute preference, then notify subscribers. */
 export function setAgentVoicesMuted(next: boolean): void {
   muted = next;
   try {
@@ -34,6 +39,7 @@ export function setAgentVoicesMuted(next: boolean): void {
   listeners.forEach((listener) => listener());
 }
 
+/** React hook returning [muted, setMuted]. */
 export function useAgentVoicesMuted(): [boolean, (next: boolean) => void] {
   const value = useSyncExternalStore(
     (listener) => {
@@ -46,6 +52,7 @@ export function useAgentVoicesMuted(): [boolean, (next: boolean) => void] {
   return [value, setAgentVoicesMuted];
 }
 
+/** Decode a base64 mp3 line and play it unless voices are muted. */
 export function playAgentAudio(audioB64: string): void {
   if (muted || typeof window === "undefined") return;
   try {

@@ -2,8 +2,9 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 
-import { api, tokenStore, type User } from "./api";
+import { api, tokenStore, type User } from "./api";  // API client, token storage and the User type
 
+/** What the auth context exposes to components. */
 interface AuthState {
   user: User | null;
   loading: boolean;
@@ -12,8 +13,10 @@ interface AuthState {
   setUser: (user: User | null) => void;
 }
 
+/** React context holding the current user and auth actions. */
 const AuthContext = createContext<AuthState | null>(null);
 
+/** Wrap the app: loads the signed-in user once and exposes sign-out/refresh. */
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
@@ -51,6 +54,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
+/** Hook to read the auth state; must be used inside AuthProvider. */
 export function useAuth(): AuthState {
   const context = useContext(AuthContext);
   if (!context) throw new Error("useAuth must be used inside AuthProvider");

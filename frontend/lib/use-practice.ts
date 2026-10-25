@@ -16,10 +16,11 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { API_URL, tokenStore } from "./api";
+import { API_URL, tokenStore } from "./api";  // backend URL and stored access token
 import { apply, INITIAL, type Frame, type SocketState } from "./use-session-socket";
-import { encodeWav } from "./wav";
+import { encodeWav } from "./wav";  // encode captured audio as WAV
 
+/** One line of live captions: who said what. */
 export interface Caption {
   id: number;
   label: string;
@@ -27,12 +28,14 @@ export interface Caption {
   text: string;
 }
 
+/** An AI participant in the room. */
 export interface PracticePersona {
   label: string;
   name: string;
   eagerness: number;
 }
 
+/** Room details the server sends when the socket opens. */
 interface Snapshot {
   you: string;
   personas: PracticePersona[];
@@ -42,17 +45,25 @@ interface Snapshot {
 
 // Voice-activity detection. Frames are ~43 ms at 48 kHz.
 const VOICE_FRAMES_TO_START = 3;
+/** Silence that ends an utterance. */
 const SILENCE_MS_TO_END = 700;
+/** Utterances shorter than this are treated as noise. */
 const MIN_UTTERANCE_MS = 450;
+/** Hard cap on one utterance's length. */
 const MAX_UTTERANCE_MS = 30_000;
+/** Audio frames kept before speech is detected, so the first syllable survives. */
 const PRE_ROLL_FRAMES = 8;
 // While a persona is audible the speakers leak into the mic, so demand more.
 const THRESHOLD_QUIET = 0.022;
+/** Louder threshold while a persona is audible (speakers leak into the mic). */
 const THRESHOLD_WHILE_PLAYING = 0.06;
 
+/** Counter giving each caption a unique id. */
 let captionSeq = 0;
 
+/** Browser voice names treated as female for the speech fallback. */
 const FEMALE_VOICE = /zira|heera|hazel|susan|samantha|aria|jenny|female|kalpana|neerja/i;
+/** Browser voice names treated as male for the speech fallback. */
 const MALE_VOICE = /david|ravi|mark|george|guy|male|prabhat/i;
 
 /** Browser voice for the fallback: Indian English first, then by gender. */
@@ -65,6 +76,10 @@ function pickBrowserVoice(gender?: string): SpeechSynthesisVoice | undefined {
   );
 }
 
+/**
+ * Run a solo practice session: voice-activity detection up, persona audio and captions down, over
+ * one WebSocket.
+ */
 export function usePractice(sessionId: string | null) {
   const [core, setCore] = useState<SocketState>(INITIAL);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -96,6 +111,7 @@ export function usePractice(sessionId: string | null) {
     null,
   );
 
+  /** Stop any persona audio or browser speech immediately. */
   const stopPlayback = useCallback(() => {
     playingRef.current = false;
     synthRef.current = false;
@@ -116,6 +132,7 @@ export function usePractice(sessionId: string | null) {
     }
   }, []);
 
+  /** Play the line that just finished arriving: mp3 if streamed, else browser speech. */
   const playPending = useCallback(() => {
     const pending = pendingRef.current;
     pendingRef.current = null;
@@ -191,6 +208,7 @@ export function usePractice(sessionId: string | null) {
     return () => cancelAnimationFrame(frame);
   }, []);
 
+  /** React to one server frame: persona audio lifecycle, captions, clock; others go to the reducer. */
   const handleFrame = useCallback(
     (frame: Frame) => {
       switch (frame.type) {
@@ -311,6 +329,7 @@ export function usePractice(sessionId: string | null) {
     };
   }, [sessionId, handleFrame, stopPlayback]);
 
+  /** Send a bare control message such as START or UTTERANCE_START. */
   const sendJson = useCallback((type: string) => {
     const socket = socketRef.current;
     if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type }));
@@ -347,6 +366,7 @@ export function usePractice(sessionId: string | null) {
       let utteranceMs = 0;
       let levelTick = 0;
 
+      /** End the current utterance: tell the server, then send its audio (or an empty frame to drop it). */
       const finish = () => {
         const socket = socketRef.current;
         const longEnough = utteranceMs - silenceMs >= MIN_UTTERANCE_MS;
@@ -362,6 +382,7 @@ export function usePractice(sessionId: string | null) {
         utteranceMs = 0;
       };
 
+      // Called for every captured audio frame: measure loudness, detect speech start/end.
       proc.onaudioprocess = (event) => {
         const data = new Float32Array(event.inputBuffer.getChannelData(0));
         let sum = 0;
@@ -426,6 +447,7 @@ export function usePractice(sessionId: string | null) {
   /** A raised hand (FR-14.12): the moderator invites you in at the next gap. */
   const raiseHand = useCallback(() => sendJson("RAISE_HAND"), [sendJson]);
 
+  /** Mute/unmute the student's microphone input. */
   const toggleMute = useCallback(() => {
     mutedRef.current = !mutedRef.current;
     setMuted(mutedRef.current);

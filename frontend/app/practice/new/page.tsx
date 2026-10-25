@@ -1,16 +1,18 @@
 "use client";
 
-import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";  // go to the room once created
+import { useEffect, useState } from "react";  // state and effects
 
-import { Orb, hueFor } from "@/app/immersive/parts";
-import { Select } from "@/app/select";
-import { ApiError, practice } from "@/lib/api";
-import { useAuth } from "@/lib/auth-context";
-import type { PersonaPreset } from "@/lib/types";
+import { Orb, hueFor } from "@/app/immersive/parts";  // persona avatars
+import { Select } from "@/app/select";  // styled dropdown
+import { ApiError, practice } from "@/lib/api";  // persona list and session creation
+import { useAuth } from "@/lib/auth-context";  // require sign-in
+import type { PersonaPreset } from "@/lib/types";  // persona preset type
 
+/** The most personas allowed at the table. */
 const MAX_PERSONAS = 4;
 
+/** Set up a practice session: topic, length, difficulty and which AI personas join. */
 export default function NewPracticePage() {
   const router = useRouter();
   const { user, loading } = useAuth();
@@ -37,6 +39,7 @@ export default function NewPracticePage() {
   if (loading) return <p className="empty">Loading…</p>;
   if (!user) return <p className="empty">Sign in to practice.</p>;
 
+  /** Add or remove a persona from the table (capped at MAX_PERSONAS). */
   function toggle(key: string) {
     setChosen((prev) =>
       prev.includes(key)
@@ -47,6 +50,7 @@ export default function NewPracticePage() {
     );
   }
 
+  /** Create the practice session and enter its room. */
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     setBusy(true);

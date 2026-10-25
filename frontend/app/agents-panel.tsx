@@ -8,13 +8,14 @@
  * metrics and final evaluation then treat them exactly like people.
  */
 
-import { useState } from "react";
+import { useState } from "react";  // form state
 
-import { Select } from "@/app/select";
+import { Select } from "@/app/select";  // styled dropdown
 
-import { ApiError, sessions } from "@/lib/api";
-import type { AgentSpec } from "@/lib/types";
+import { ApiError, sessions } from "@/lib/api";  // add agents call and error type
+import type { AgentSpec } from "@/lib/types";  // agent spec type
 
+/** Starter agents: a dominator, a facilitator and a quiet expert. */
 const DEFAULT_AGENTS: AgentSpec[] = [
   {
     name: "Arjun",
@@ -39,8 +40,10 @@ const DEFAULT_AGENTS: AgentSpec[] = [
   },
 ];
 
+/** Template for a newly added agent row. */
 const BLANK: AgentSpec = { name: "", persona: "", talkativeness: "medium" };
 
+/** Host panel to seat AI-played candidates in a lobby (demo feature). */
 export function AgentsPanel({
   sessionId,
   seatsLeft,
@@ -57,9 +60,11 @@ export function AgentsPanel({
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<{ ok: boolean; text: string } | null>(null);
 
+  /** Change fields of one agent row. */
   const update = (index: number, patch: Partial<AgentSpec>) =>
     setAgents((prev) => prev.map((agent, i) => (i === index ? { ...agent, ...patch } : agent)));
 
+  /** Send all agents to the server; they join as ready participants. */
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     setBusy(true);

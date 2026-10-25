@@ -8,15 +8,16 @@
  * out of MVP scope, so this shows the data rather than pretending to coach.
  */
 
-import Link from "next/link";
-import { useEffect, useState } from "react";
+import Link from "next/link";  // client-side navigation link
+import { useEffect, useState } from "react";  // state and effects
 
-import { Icon } from "@/app/icons";
-import { AnimatedBar, CountUp, Skeleton } from "@/app/motion";
-import { ApiError, evaluation } from "@/lib/api";
-import { useAuth } from "@/lib/auth-context";
-import type { HistoryOut } from "@/lib/types";
+import { Icon } from "@/app/icons";  // icon set
+import { AnimatedBar, CountUp, Skeleton } from "@/app/motion";  // animated bars and counters
+import { ApiError, evaluation } from "@/lib/api";  // history call and error type
+import { useAuth } from "@/lib/auth-context";  // require sign-in
+import type { HistoryOut } from "@/lib/types";  // history response type
 
+/** Display names for the scoring dimensions. */
 const DIMENSION_LABELS: Record<string, string> = {
   content: "Content",
   communication: "Communication",
@@ -26,6 +27,7 @@ const DIMENSION_LABELS: Record<string, string> = {
   behavior: "Behaviour",
 };
 
+/** Past sessions: totals, average by skill and a link to each report. */
 export default function HistoryPage() {
   const { user, loading } = useAuth();
   const [history, setHistory] = useState<HistoryOut | null>(null);
@@ -48,6 +50,7 @@ export default function HistoryPage() {
 
   const dimensions = Object.entries(history.trend).sort(([, a], [, b]) => a - b);
   const weakest = dimensions[0];
+  // Colour band for a 0-100 score.
   const tone = (score: number) => (score >= 70 ? "good" : score >= 50 ? "mid" : "low");
 
   return (

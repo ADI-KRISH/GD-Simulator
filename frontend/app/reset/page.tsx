@@ -1,11 +1,12 @@
 "use client";
 
-import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useState } from "react";
+import Link from "next/link";  // client-side navigation link
+import { useRouter } from "next/navigation";  // redirect after a successful reset
+import { useState } from "react";  // form state
 
-import { ApiError, api } from "@/lib/api";
+import { ApiError, api } from "@/lib/api";  // password-reset calls and error type
 
+/** Two-step password reset: request a token, then set a new password. */
 export default function ResetPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
@@ -14,6 +15,7 @@ export default function ResetPage() {
   const [status, setStatus] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
 
+  /** Step 1: ask for a reset token (filled in automatically when running locally). */
   async function handleRequest(event: React.FormEvent) {
     event.preventDefault();
     setStatus(null);
@@ -39,6 +41,7 @@ export default function ResetPage() {
     }
   }
 
+  /** Step 2: set the new password with the token, then return to sign-in. */
   async function handleConfirm(event: React.FormEvent) {
     event.preventDefault();
     setStatus(null);

@@ -1,12 +1,13 @@
 "use client";
 
-import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useState } from "react";
+import Link from "next/link";  // client-side navigation link
+import { useRouter } from "next/navigation";  // redirect after sign-in
+import { useState } from "react";  // form state
 
-import { ApiError, api } from "@/lib/api";
-import { useAuth } from "@/lib/auth-context";
+import { ApiError, api } from "@/lib/api";  // login call and error type
+import { useAuth } from "@/lib/auth-context";  // reload the user after login
 
+/** Sign-in form (email + password). */
 export default function LoginPage() {
   const router = useRouter();
   const { refreshUser } = useAuth();
@@ -15,6 +16,7 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  /** Sign in, reload the user, and go home; show the API's error otherwise. */
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     setBusy(true);

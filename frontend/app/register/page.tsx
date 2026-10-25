@@ -1,14 +1,15 @@
 "use client";
 
-import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useState } from "react";
+import Link from "next/link";  // client-side navigation link
+import { useRouter } from "next/navigation";  // redirect after sign-up
+import { useState } from "react";  // form state
 
-import { Select } from "@/app/select";
+import { Select } from "@/app/select";  // styled dropdown
 
 import { ApiError, request, tokenStore, type TokenPair } from "@/lib/api";
-import { useAuth } from "@/lib/auth-context";
+import { useAuth } from "@/lib/auth-context";  // reload the user after sign-up
 
+/** Account creation form; signs the new user in straight after. */
 export default function RegisterPage() {
   const router = useRouter();
   const { refreshUser } = useAuth();
@@ -21,11 +22,13 @@ export default function RegisterPage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  /** Build a change handler that writes one form field. */
   function update(field: keyof typeof form) {
     return (event: React.ChangeEvent<HTMLInputElement>) =>
       setForm((prev) => ({ ...prev, [field]: event.target.value }));
   }
 
+  /** Register, sign in with the same credentials, and go home. */
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     setBusy(true);

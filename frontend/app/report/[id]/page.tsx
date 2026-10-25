@@ -9,15 +9,15 @@
  * UI has no way to render a bare score.
  */
 
-import Link from "next/link";
+import Link from "next/link";  // client-side navigation link
 import { useParams, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";  // state, effects and stable callbacks
 
-import { Icon } from "@/app/icons";
+import { Icon } from "@/app/icons";  // icon set
 import { AnimatedBar, ScoreRing, Skeleton } from "@/app/motion";
-import { ApiError, evaluation, sessions } from "@/lib/api";
-import { TranscriptCard } from "@/app/transcript-card";
-import { useAuth } from "@/lib/auth-context";
+import { ApiError, evaluation, sessions } from "@/lib/api";  // session and evaluation calls
+import { TranscriptCard } from "@/app/transcript-card";  // the raw transcript
+import { useAuth } from "@/lib/auth-context";  // tell host from candidate
 import type {
   CandidateReportBody,
   SynthesisBody,
@@ -29,6 +29,7 @@ import type {
   TranscriptOut,
 } from "@/lib/types";
 
+/** Evaluation states meaning the report is not ready yet (the page keeps polling). */
 const PENDING_STATES = new Set([
   "QUEUED",
   "PREPARING",
@@ -38,6 +39,7 @@ const PENDING_STATES = new Set([
   "REPORT_GENERATING",
 ]);
 
+/** Display names for the scoring dimensions. */
 const DIMENSION_LABELS: Record<string, string> = {
   content: "Content",
   communication: "Communication",
@@ -47,6 +49,10 @@ const DIMENSION_LABELS: Record<string, string> = {
   behavior: "Behaviour",
 };
 
+/**
+ * The results screen: progress while evaluating, then the candidate report; hosts also see scores
+ * and the group summary.
+ */
 export default function ReportPage() {
   const { id } = useParams<{ id: string }>();
   // The host's score table links here with ?candidate=B to open that report.
@@ -63,6 +69,7 @@ export default function ReportPage() {
 
   const isHost = session != null && user != null && session.host_id === user.id;
 
+  /** Load the session, evaluation status, report(s), scores and transcript (some may 404 while pending). */
   const load = useCallback(async () => {
     try {
       const loaded = await sessions.get(id);
@@ -246,6 +253,7 @@ function Completing({ status, session }: { status: EvaluationStatus | null; sess
   );
 }
 
+/** Evaluation status card with the agents used and the rubric/prompt/agent versions. */
 function EvaluationProgress({ status }: { status: EvaluationStatus }) {
   const done = status.state === "COMPLETED";
   const failed = status.state === "FAILED";
@@ -276,6 +284,7 @@ function EvaluationProgress({ status }: { status: EvaluationStatus }) {
   );
 }
 
+/** Turn a 0-100 score into a word (Excellent / Good / Fair / Needs work). */
 function ratingWord(score: number): string {
   if (score >= 80) return "Excellent";
   if (score >= 65) return "Good";
@@ -283,6 +292,7 @@ function ratingWord(score: number): string {
   return "Needs work";
 }
 
+/** Open the browser's print dialog so the report can be saved as a PDF. */
 function downloadPdf(name: string) {
   // The browser's own "Save as PDF" — the print stylesheet in globals.css lays
   // the report out for paper. The title becomes the suggested file name.
@@ -292,8 +302,10 @@ function downloadPdf(name: string) {
   document.title = previous;
 }
 
+/** The tabs of a candidate report. */
 type ReportTab = "summary" | "analysis" | "timeline" | "suggestions";
 
+/** Tab keys with their labels, in display order. */
 const REPORT_TABS: [ReportTab, string][] = [
   ["summary", "Summary"],
   ["analysis", "Detailed analysis"],
@@ -301,6 +313,7 @@ const REPORT_TABS: [ReportTab, string][] = [
   ["suggestions", "Suggestions"],
 ];
 
+/** One candidate's full report with tabs for summary, analysis, timeline and suggestions. */
 function CandidateReportCard({
   body,
   session,
@@ -368,6 +381,7 @@ function CandidateReportCard({
   );
 }
 
+/** Overall score, headline summary, strengths and the measured numbers. */
 function SummaryTab({
   body,
   synthesis,
@@ -460,6 +474,7 @@ function SummaryTab({
   );
 }
 
+/** Improvement suggestions and focus areas from the synthesis. */
 function SuggestionsTab({
   body,
   synthesis,
@@ -536,6 +551,7 @@ function SuggestionsTab({
   );
 }
 
+/** Per-dimension breakdown with evidence, the score equation and tool audit. */
 function AnalysisTab({
   body,
   session,
@@ -639,6 +655,7 @@ function AnalysisTab({
   );
 }
 
+/** Who spoke when, with this candidate's lines highlighted. */
 function TimelineTab({
   body,
   session,
@@ -702,6 +719,7 @@ function TimelineTab({
   );
 }
 
+/** Read the optional synthesis (it may be missing or partial) into a safe shape. */
 function readSynthesis(raw: CandidateReportBody["synthesis"]): Partial<SynthesisBody> | null {
   // Optional three ways: the synthesis agent may have failed, and reports stored
   // before it existed have no `synthesis` key at all.
@@ -817,11 +835,13 @@ function ScoreBreakdown({ body, session }: { body: CandidateReportBody; session:
   );
 }
 
+/** Format seconds as mm:ss. */
 function formatTime(seconds: number): string {
   const s = Math.max(0, Math.floor(seconds));
   return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 }
 
+/** The measured numbers (speaking time, turns, interruptions, ...) as tiles. */
 function MetricsGrid({ metrics }: { metrics: CandidateReportBody["metrics"] }) {
   const items: [string, string][] = [
     ["Speaking time", `${Math.round(metrics.speaking_seconds)}s`],
@@ -851,6 +871,7 @@ function MetricsGrid({ metrics }: { metrics: CandidateReportBody["metrics"] }) {
   );
 }
 
+/** Host-only summary of the whole discussion. */
 function GroupReportCard({ body }: { body: GroupReportBody }) {
   return (
     <div className="card">
@@ -912,14 +933,17 @@ function GroupReportCard({ body }: { body: GroupReportBody }) {
   );
 }
 
+/** Colour band for a 0-100 score. */
 function scoreTone(score100: number): "good" | "mid" | "low" {
   return score100 >= 70 ? "good" : score100 >= 50 ? "mid" : "low";
 }
 
+/** CSS class for a score's colour band. */
 function scoreClass(score100: number): string {
   return `score--${scoreTone(score100)}`;
 }
 
+/** Host-only ranked table of every participant's score, linking to each report. */
 function ParticipantsTable({
   scores,
   sessionId,

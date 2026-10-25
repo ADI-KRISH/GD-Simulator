@@ -6,7 +6,7 @@
  */
 
 import { useParams, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useState } from "react";  // state and effects
 
 import {
   ArenaHeader,
@@ -15,13 +15,18 @@ import {
   Notices,
   RoundTable,
   type SeatInfo,
-} from "@/app/immersive/parts";
-import { ApiError, sessions } from "@/lib/api";
-import { useAuth } from "@/lib/auth-context";
-import { usePractice } from "@/lib/use-practice";
+} from "@/app/immersive/parts";  // room building blocks
+import { ApiError, sessions } from "@/lib/api";  // end the session
+import { useAuth } from "@/lib/auth-context";  // your display name
+import { usePractice } from "@/lib/use-practice";  // the practice socket + audio hook
 
+/** Session states after which the report page takes over. */
 const FINISHED = new Set(["ENDED", "EVALUATING", "COMPLETED"]);
 
+/**
+ * The live practice room: round table, captions, microphone/typing controls and the finish
+ * button.
+ */
 export default function PracticeRoomPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
@@ -54,6 +59,7 @@ export default function PracticeRoomPage() {
   for (const p of personas) names.set(p.label, p.name);
   const nameOf = (label: string) => names.get(label) ?? label;
 
+  // You first, then each persona; speaking/level come from the live socket state.
   const seats: SeatInfo[] = [
     {
       label: "A",
@@ -78,11 +84,13 @@ export default function PracticeRoomPage() {
   const penalty = room.penalties["A"]?.penalty ?? 0;
   const order = ["A", ...personas.map((p) => p.label)];
 
+  /** Send the typed turn (text mode) and clear the box. */
   function send(event: React.FormEvent) {
     event.preventDefault();
     if (room.sendText(draft)) setDraft("");
   }
 
+  /** End the session early; the page then moves to the report. */
   async function endNow() {
     setEnding(true);
     try {

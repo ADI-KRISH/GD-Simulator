@@ -1,16 +1,18 @@
 "use client";
 
-import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";  // client-side navigation link
+import { useRouter } from "next/navigation";  // go to the lobby after joining
+import { useCallback, useEffect, useState } from "react";  // state, effects and stable callbacks
 
-import { Icon } from "@/app/icons";
-import { ApiError, lobbies } from "@/lib/api";
-import { useAuth } from "@/lib/auth-context";
-import type { LobbyListItem } from "@/lib/types";
+import { Icon } from "@/app/icons";  // icon set
+import { ApiError, lobbies } from "@/lib/api";  // browse and join lobbies
+import { useAuth } from "@/lib/auth-context";  // require sign-in
+import type { LobbyListItem } from "@/lib/types";  // lobby list item type
 
+/** How often the lobby list refreshes. */
 const REFRESH_MS = 5000;
 
+/** Browse open group lobbies and join one. */
 export default function LobbiesPage() {
   const router = useRouter();
   const { user, loading } = useAuth();
@@ -18,6 +20,7 @@ export default function LobbiesPage() {
   const [error, setError] = useState<string | null>(null);
   const [joining, setJoining] = useState<string | null>(null);
 
+  /** Fetch the current list of open lobbies. */
   const load = useCallback(async () => {
     try {
       setItems(await lobbies.browse());
@@ -33,6 +36,7 @@ export default function LobbiesPage() {
     return () => clearInterval(timer);
   }, [user, load]);
 
+  /** Join the chosen lobby and open its page. */
   async function join(item: LobbyListItem) {
     setJoining(item.code);
     setError(null);

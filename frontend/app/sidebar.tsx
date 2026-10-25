@@ -1,18 +1,20 @@
 "use client";
 
-import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import Link from "next/link";  // client-side navigation link
+import { usePathname, useRouter } from "next/navigation";  // current path and sign-out redirect
+import { useEffect, useState } from "react";  // state and effects
 
-import { notifications } from "@/lib/api";
-import { useAuth } from "@/lib/auth-context";
-import { isEmbedded } from "@/lib/embedded";
+import { notifications } from "@/lib/api";  // poll the unread count
+import { useAuth } from "@/lib/auth-context";  // current user and sign-out
+import { isEmbedded } from "@/lib/embedded";  // detect the platform shell
 import { Icon, type IconName } from "./icons";
+import { ThemeToggle } from "./theme-toggle";  // light / dark switch
 
 // Polling, not a socket: the control-plane socket is scoped to one session, and
 // a notification can arrive when the user is not in one (FR-32).
 const POLL_MS = 30_000;
 
+/** Primary navigation entries; `match` marks which paths highlight each one. */
 const MAIN_NAV: { href: string; label: string; icon: IconName; match: (p: string) => boolean }[] = [
   {
     href: "/",
@@ -30,6 +32,10 @@ const MAIN_NAV: { href: string; label: string; icon: IconName; match: (p: string
   },
 ];
 
+/**
+ * Left navigation: brand, links, notifications badge and account; slimmed down inside the
+ * platform shell.
+ */
 export function Sidebar() {
   const { user, loading, signOut } = useAuth();
   const router = useRouter();
@@ -45,6 +51,7 @@ export function Sidebar() {
       return;
     }
     let cancelled = false;
+    /** Refresh the unread-notifications badge. */
     const poll = async () => {
       try {
         const list = await notifications.list(true);
@@ -61,11 +68,13 @@ export function Sidebar() {
     };
   }, [user]);
 
+  /** Sign out and go to the login page. */
   async function handleSignOut() {
     await signOut();
     router.push("/login");
   }
 
+  // The logo link, reused in every layout below.
   const brand = (
     <Link href="/" className="brand">
       <span className="logo-mark" aria-hidden>
@@ -104,6 +113,7 @@ export function Sidebar() {
       <header className="guestbar">
         {brand}
         <nav className="guestbar-nav">
+          <ThemeToggle />
           <Link href="/login" className={`nav-link ${pathname === "/login" ? "nav-link--active" : ""}`}>
             Sign in
           </Link>
@@ -115,6 +125,7 @@ export function Sidebar() {
     );
   }
 
+  /** One sidebar link, optionally with an unread-count badge. */
   const item = (href: string, label: string, icon: IconName, active: boolean, badge?: number) => (
     <Link
       key={href}
@@ -150,6 +161,7 @@ export function Sidebar() {
           {user.full_name}
           <span className="meta">{user.role}</span>
         </span>
+        <ThemeToggle />
         <button type="button" className="secondary side-signout" onClick={handleSignOut}>
           Sign out
         </button>

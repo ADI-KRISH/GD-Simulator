@@ -1,13 +1,13 @@
 "use client";
 
-import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";  // client-side navigation link
+import { useRouter } from "next/navigation";  // go to the lobby after joining
+import { useCallback, useEffect, useState } from "react";  // state, effects and stable callbacks
 
-import { Icon, type IconName } from "@/app/icons";
-import { ApiError, lobbies, sessions } from "@/lib/api";
-import { useAuth } from "@/lib/auth-context";
-import type { SessionSummary } from "@/lib/types";
+import { Icon, type IconName } from "@/app/icons";  // icon set
+import { ApiError, lobbies, sessions } from "@/lib/api";  // list sessions and join by code
+import { useAuth } from "@/lib/auth-context";  // current user
+import type { SessionSummary } from "@/lib/types";  // session summary type
 
 /** Where a session in this state should take you. */
 function destination(session: SessionSummary): string {
@@ -24,6 +24,7 @@ function destination(session: SessionSummary): string {
   }
 }
 
+/** Marketing blurbs shown to signed-out visitors. */
 const FEATURES: { icon: IconName; title: string; text: string }[] = [
   {
     icon: "mic",
@@ -42,6 +43,7 @@ const FEATURES: { icon: IconName; title: string; text: string }[] = [
   },
 ];
 
+/** Landing page for visitors; dashboard (create/join/practice and your sessions) when signed in. */
 export default function HomePage() {
   const router = useRouter();
   const { user, loading } = useAuth();
@@ -51,6 +53,7 @@ export default function HomePage() {
   const [mine, setMine] = useState<SessionSummary[]>([]);
   const [hosted, setHosted] = useState<SessionSummary[]>([]);
 
+  /** Load the sessions you joined (and, for hosts, the ones you host). */
   const load = useCallback(async () => {
     if (!user) return;
     try {
@@ -65,6 +68,7 @@ export default function HomePage() {
     void load();
   }, [load]);
 
+  /** Join a lobby by the typed code. */
   async function handleJoin(event: React.FormEvent) {
     event.preventDefault();
     setJoining(true);
@@ -226,6 +230,7 @@ export default function HomePage() {
   );
 }
 
+/** A card listing sessions, each linking to wherever that session's state belongs. */
 function SessionList({
   title,
   items,

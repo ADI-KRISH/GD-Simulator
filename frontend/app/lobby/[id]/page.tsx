@@ -9,18 +9,19 @@
  * server, which is the whole point of the server owning session state.
  */
 
-import { useParams, useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useParams, useRouter } from "next/navigation";  // read the id; navigate into the room
+import { useCallback, useEffect, useState } from "react";  // state, effects and stable callbacks
 
-import { AgentsPanel } from "@/app/agents-panel";
-import { Icon } from "@/app/icons";
-import { Skeleton } from "@/app/motion";
-import { hueFor } from "@/app/immersive/parts";
-import { ApiError, lobbies, sessions } from "@/lib/api";
-import { useAuth } from "@/lib/auth-context";
-import { useSessionSocket } from "@/lib/use-session-socket";
-import type { GDSession, LobbyView } from "@/lib/types";
+import { AgentsPanel } from "@/app/agents-panel";  // host panel for AI participants
+import { Icon } from "@/app/icons";  // icon set
+import { Skeleton } from "@/app/motion";  // loading skeleton
+import { hueFor } from "@/app/immersive/parts";  // stable colour per participant
+import { ApiError, lobbies, sessions } from "@/lib/api";  // lobby and session calls
+import { useAuth } from "@/lib/auth-context";  // current user
+import { useSessionSocket } from "@/lib/use-session-socket";  // live roster events
+import type { GDSession, LobbyView } from "@/lib/types";  // lobby and session types
 
+/** Socket events that mean the roster changed and the lobby must be refetched. */
 const ROSTER_EVENTS = new Set([
   "USER_JOINED",
   "USER_LEFT",
@@ -29,6 +30,10 @@ const ROSTER_EVENTS = new Set([
   "RECONNECTED",
 ]);
 
+/**
+ * The waiting room: share the code, see who joined, mark ready; the host invites people and
+ * starts.
+ */
 export default function LobbyPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
@@ -45,6 +50,7 @@ export default function LobbyPage() {
   const socket = useSessionSocket(id ?? null);
   const latest = socket.events[0];
 
+  /** Fetch the latest lobby view and session details. */
   const load = useCallback(async () => {
     try {
       setLobby(await lobbies.get(id));
@@ -87,6 +93,7 @@ export default function LobbyPage() {
     }
   }
 
+  /** Flip your own ready flag. */
   async function toggleReady() {
     if (!me) return;
     setBusy(true);
@@ -100,6 +107,7 @@ export default function LobbyPage() {
     }
   }
 
+  /** Host: start the discussion and move into the room. */
   async function startSession() {
     setBusy(true);
     setError(null);
@@ -112,6 +120,7 @@ export default function LobbyPage() {
     }
   }
 
+  /** Host: invite a registered user by email. */
   async function sendInvite(event: React.FormEvent) {
     event.preventDefault();
     setInviteStatus(null);
@@ -125,6 +134,7 @@ export default function LobbyPage() {
     }
   }
 
+  /** Copy the lobby code to the clipboard and flash a confirmation. */
   async function copyCode() {
     try {
       await navigator.clipboard.writeText(lobby?.code ?? "");
@@ -135,6 +145,7 @@ export default function LobbyPage() {
     }
   }
 
+  /** Leave the lobby and go home. */
   async function leave() {
     try {
       await lobbies.leave(id);
@@ -148,6 +159,7 @@ export default function LobbyPage() {
   }
 
   const minutes = Math.round(session.duration_seconds / 60);
+  // Dot colour and label for a participant's connection/readiness.
   const statusOf = (p: (typeof lobby.participants)[number]) =>
     p.state === "DISCONNECTED"
       ? { text: "Disconnected", cls: "dot--away" }

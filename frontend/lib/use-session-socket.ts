@@ -13,10 +13,11 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { playAgentAudio } from "./agent-audio";
-import { API_URL, tokenStore } from "./api";
-import type { LobbyView, TimerView, TopicView } from "./types";
+import { playAgentAudio } from "./agent-audio";  // play simulated participants' spoken lines
+import { API_URL, tokenStore } from "./api";  // backend URL and the stored access token
+import type { LobbyView, TimerView, TopicView } from "./types";  // lobby, timer and topic shapes
 
+/** The server → client event names this client understands. */
 export type ServerEventType =
   | "USER_JOINED"
   | "USER_LEFT"
@@ -37,6 +38,7 @@ export type ServerEventType =
   | "EVALUATION_COMPLETED"
   | "ERROR";
 
+/** Envelope for every WebSocket message from the server. */
 export interface Frame {
   // Practice mode adds its own frame names on top of the shared ones.
   type: ServerEventType | (string & {});
@@ -54,6 +56,7 @@ export interface TurnNotice {
   penalty: number;
 }
 
+/** Everything the UI shows that comes from the control-plane socket. */
 export interface SocketState {
   connected: boolean;
   lobby: LobbyView | null;
@@ -77,8 +80,10 @@ export interface SocketState {
   ideas: { ideas: string[]; open_questions: string[] } | null;
 }
 
+/** Counter giving each turn notice a unique id. */
 let noticeSeq = 0;
 
+/** State before the first frame arrives. */
 export const INITIAL: SocketState = {
   connected: false,
   lobby: null,
@@ -103,14 +108,21 @@ const MAX_EVENTS = 50;
 // Reconnect backoff, capped. A dropped socket must not end the session, so the
 // client keeps trying rather than giving up (design §9).
 const RECONNECT_BASE_MS = 500;
+/** Upper bound on the reconnect delay. */
 const RECONNECT_MAX_MS = 10_000;
 
+/**
+ * Connect to a session's control socket, reconnect on drops, and expose server-driven state and
+ * actions.
+ */
 export function useSessionSocket(sessionId: string | null) {
   const [state, setState] = useState<SocketState>(INITIAL);
+  // The live socket, how many reconnects have failed in a row, and whether we closed it on purpose.
   const socketRef = useRef<WebSocket | null>(null);
   const attemptRef = useRef(0);
   const closedByUs = useRef(false);
 
+  /** Send a typed message to the server if the socket is open. */
   const send = useCallback((type: string, payload: Record<string, unknown> = {}) => {
     const socket = socketRef.current;
     if (socket?.readyState === WebSocket.OPEN) {
@@ -123,6 +135,7 @@ export function useSessionSocket(sessionId: string | null) {
     closedByUs.current = false;
     let timeout: ReturnType<typeof setTimeout> | undefined;
 
+    /** Open the socket; on an unexpected close, retry with exponential backoff. */
     const connect = () => {
       const token = tokenStore.access;
       if (!token) return;
@@ -179,6 +192,7 @@ export function useSessionSocket(sessionId: string | null) {
     };
   }, [sessionId]);
 
+  // Convenience senders for lobby readiness and speech activity.
   const setReady = useCallback((ready: boolean) => send(ready ? "READY" : "NOT_READY"), [send]);
   const speechStarted = useCallback(() => send("SPEECH_STARTED"), [send]);
   const speechStopped = useCallback(() => send("SPEECH_STOPPED"), [send]);
@@ -186,6 +200,7 @@ export function useSessionSocket(sessionId: string | null) {
   return { ...state, setReady, speechStarted, speechStopped, send };
 }
 
+/** Pure reducer: fold one server frame into the socket state. */
 export function apply(prev: SocketState, frame: Frame): SocketState {
   const events = [frame, ...prev.events].slice(0, MAX_EVENTS);
   const label = frame.payload.candidate_label as string | undefined;
@@ -277,6 +292,7 @@ export function apply(prev: SocketState, frame: Frame): SocketState {
   }
 }
 
+/** Format seconds as mm:ss. */
 export function formatClock(seconds: number): string {
   const safe = Math.max(0, Math.floor(seconds));
   return `${String(Math.floor(safe / 60)).padStart(2, "0")}:${String(safe % 60).padStart(2, "0")}`;

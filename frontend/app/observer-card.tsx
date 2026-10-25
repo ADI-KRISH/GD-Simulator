@@ -8,18 +8,20 @@
  * nothing here can be read as a verdict.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useState } from "react";  // state and polling effect
 
-import { sessions } from "@/lib/api";
-import type { RollingState } from "@/lib/types";
+import { sessions } from "@/lib/api";  // fetch the Observer state
+import type { RollingState } from "@/lib/types";  // Observer state type
 
 // The Observer folds in one closed 45-second window at a time.
 const POLL_MS = 10_000;
 
+/** Live card showing the Observer's notes, refreshed every 10 seconds. */
 export function ObserverCard({ sessionId }: { sessionId: string }) {
   const [state, setState] = useState<RollingState | null>(null);
 
   useEffect(() => {
+    /** Fetch the latest Observer state (failures are ignored: display only). */
     const load = () =>
       sessions
         .observer(sessionId)
@@ -30,6 +32,7 @@ export function ObserverCard({ sessionId }: { sessionId: string }) {
     return () => clearInterval(timer);
   }, [sessionId]);
 
+  // True until the Observer has produced anything worth showing.
   const empty =
     !state ||
     (!state.discussion_direction &&
@@ -79,6 +82,7 @@ export function ObserverCard({ sessionId }: { sessionId: string }) {
   );
 }
 
+/** A titled list of the latest five items (hidden when empty). */
 function Section({ title, items }: { title: string; items: string[] }) {
   if (items.length === 0) return null;
   return (

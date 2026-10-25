@@ -21,13 +21,14 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { uploadAudio } from "./api";
-import type { MediaToken } from "./types";
+import { uploadAudio } from "./api";  // upload each recorded window
+import type { MediaToken } from "./types";  // LiveKit credentials shape
 
 // Matches the server's processing window (CHUNK_SECONDS in chunking.py) so an
 // uploaded chunk lines up with the window the Observer will read.
 const RECORD_WINDOW_MS = 45_000;
 
+/** Another participant in the room, as shown in the video grid. */
 export interface RemoteParticipant {
   identity: string;
   name: string;
@@ -36,6 +37,7 @@ export interface RemoteParticipant {
   videoEnabled: boolean;
 }
 
+/** Connection, device and upload status exposed by the hook. */
 export interface MediaState {
   connected: boolean;
   connecting: boolean;
@@ -48,6 +50,7 @@ export interface MediaState {
   uploadError: string | null;
 }
 
+/** Join the LiveKit room and record the local microphone in windows for transcription. */
 export function useMediaRoom(
   sessionId: string | null,
   credentials: MediaToken | null,
@@ -76,6 +79,7 @@ export function useMediaRoom(
   const sequenceRef = useRef(0);
   const attachedRef = useRef(new Map<string, HTMLMediaElement>());
 
+  /** Move already-attached remote audio/video elements into the given container. */
   const attachRemoteMedia = useCallback((container: HTMLElement | null) => {
     if (!container) return;
     for (const [, element] of attachedRef.current) {
@@ -98,6 +102,7 @@ export function useMediaRoom(
       const room = new Room({ adaptiveStream: true, dynacast: true });
       roomRef.current = room;
 
+      /** Refresh the remote-participant list from LiveKit's current state. */
       const syncRemotes = () => {
         if (cancelled) return;
         setState((prev) => ({
@@ -202,6 +207,7 @@ export function useMediaRoom(
     let stopped = false;
     let windowTimer: ReturnType<typeof setTimeout> | undefined;
 
+    /** Open the microphone and start recording consecutive windows. */
     const start = async () => {
       try {
         stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -220,6 +226,7 @@ export function useMediaRoom(
       // Respect a mute made before the discussion clock started.
       stream.getAudioTracks().forEach((track) => (track.enabled = micOnRef.current));
 
+      /** Upload one finished window; failures are reported but never fatal. */
       const upload = async (event: BlobEvent) => {
         if (!event.data.size || options.startedAt === null) return;
         const sequence = sequenceRef.current++;
@@ -272,6 +279,7 @@ export function useMediaRoom(
     };
   }, [sessionId, options.startedAt, publish]);
 
+  /** Mute/unmute the microphone in the room and in the recording tap. */
   const toggleMic = useCallback(async () => {
     const room = roomRef.current;
     if (!room) return;
@@ -283,6 +291,7 @@ export function useMediaRoom(
     setState((prev) => ({ ...prev, micEnabled: next }));
   }, []);
 
+  /** Turn the camera on or off. */
   const toggleCamera = useCallback(async () => {
     const room = roomRef.current;
     if (!room) return;
@@ -294,6 +303,7 @@ export function useMediaRoom(
   return { ...state, toggleMic, toggleCamera, attachRemoteMedia, localVideoRef };
 }
 
+/** The first audio container/codec this browser's MediaRecorder supports. */
 function pickMimeType(): string {
   const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus"];
   for (const type of candidates) {

@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef } from "react";  // scroll ref and effect
 
-import type { TranscriptOut } from "@/lib/types";
+import type { TranscriptOut } from "@/lib/types";  // transcript type
 
 /** The raw transcript (FR-15). Shared by the live room and the report. */
 export function TranscriptCard({

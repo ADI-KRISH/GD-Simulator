@@ -2,13 +2,14 @@
 
 /** FR-02 — user profile. */
 
-import { useState } from "react";
+import { useState } from "react";  // form state
 
-import { Select } from "@/app/select";
+import { Select } from "@/app/select";  // styled dropdown
 
-import { ApiError, api, type ExperienceLevel } from "@/lib/api";
-import { useAuth } from "@/lib/auth-context";
+import { ApiError, api, type ExperienceLevel } from "@/lib/api";  // profile update call and types
+import { useAuth } from "@/lib/auth-context";  // current user and reload
 
+/** Experience-level options for the dropdown. */
 const LEVELS: { value: ExperienceLevel; label: string }[] = [
   { value: "student", label: "Student" },
   { value: "entry", label: "Entry level" },
@@ -16,6 +17,7 @@ const LEVELS: { value: ExperienceLevel; label: string }[] = [
   { value: "senior", label: "Senior" },
 ];
 
+/** Edit your name, skills and experience level; shows stats derived from past discussions. */
 export default function ProfilePage() {
   const { user, loading, refreshUser } = useAuth();
   const [fullName, setFullName] = useState<string | null>(null);
@@ -33,6 +35,7 @@ export default function ProfilePage() {
   const skillsValue = skills ?? (user.profile?.skills ?? []).join(", ");
   const levelValue = level ?? user.profile?.experience_level ?? "student";
 
+  /** Save the edited fields (skills are comma-separated). */
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     setBusy(true);

@@ -2,13 +2,14 @@
 
 /** FR-32 — notifications. */
 
-import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";  // client-side navigation link
+import { useCallback, useEffect, useState } from "react";  // state and effects
 
-import { ApiError, notifications } from "@/lib/api";
-import { useAuth } from "@/lib/auth-context";
-import type { NotificationItem, NotificationKind } from "@/lib/types";
+import { ApiError, notifications } from "@/lib/api";  // notification calls and error type
+import { useAuth } from "@/lib/auth-context";  // require sign-in
+import type { NotificationItem, NotificationKind } from "@/lib/types";  // notification types
 
+/** Short label shown for each notification kind. */
 const KIND_LABELS: Record<NotificationKind, string> = {
   lobby_created: "Lobby",
   session_invitation: "Invitation",
@@ -18,12 +19,14 @@ const KIND_LABELS: Record<NotificationKind, string> = {
   report_available: "Report",
 };
 
+/** The notification inbox with mark-read actions. */
 export default function NotificationsPage() {
   const { user, loading } = useAuth();
   const [items, setItems] = useState<NotificationItem[]>([]);
   const [unread, setUnread] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
+  /** Fetch notifications and the unread count. */
   const load = useCallback(async () => {
     if (!user) return;
     try {
@@ -39,11 +42,13 @@ export default function NotificationsPage() {
     void load();
   }, [load]);
 
+  /** Mark one notification read, then reload. */
   async function markRead(id: string) {
     await notifications.markRead(id).catch(() => undefined);
     await load();
   }
 
+  /** Mark everything read, then reload. */
   async function markAllRead() {
     await notifications.markAllRead().catch(() => undefined);
     await load();

@@ -9,6 +9,7 @@
 
 const KEY = "gd.embedded";
 
+/** Remember (for this tab) that GD is running inside the platform shell. */
 export function markEmbedded(): void {
   try {
     sessionStorage.setItem(KEY, "1");
@@ -17,6 +18,7 @@ export function markEmbedded(): void {
   }
 }
 
+/** True if GD is framed by the platform shell (flag set, or running inside an iframe). */
 export function isEmbedded(): boolean {
   if (typeof window === "undefined") return false;
   try {

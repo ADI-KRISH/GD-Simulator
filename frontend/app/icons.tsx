@@ -1,4 +1,4 @@
-import type { SVGProps } from "react";
+import type { SVGProps } from "react";  // SVG props type
 
 /**
  * One line-icon set for the whole app, drawn here so nothing depends on an icon
@@ -43,9 +43,19 @@ export type IconName =
   | "list"
   | "lightbulb"
   | "alert"
-  | "wave";
+  | "wave"
+  | "sun"
+  | "moon";
 
+/** SVG path data for each icon, drawn on a 24x24 grid. */
 const PATHS: Record<IconName, React.ReactNode> = {
+  sun: (
+    <>
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M18.4 5.6L17 7M7 17l-1.4 1.4" />
+    </>
+  ),
+  moon: <path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z" />,
   users: (
     <>
       <circle cx="9" cy="8" r="3" />
@@ -252,6 +262,7 @@ const PATHS: Record<IconName, React.ReactNode> = {
   ),
 };
 
+/** Render a named line icon at the given size; extra props pass through to the <svg>. */
 export function Icon({
   name,
   size = 20,

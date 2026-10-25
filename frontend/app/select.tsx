@@ -2,8 +2,9 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 
-import { Icon } from "./icons";
+import { Icon } from "./icons";  // chevron and check icons
 
+/** One choice in a Select: its value, label and optional hint. */
 export interface SelectOption<T extends string | number> {
   value: T;
   label: string;
@@ -47,6 +48,7 @@ export function Select<T extends string | number>({
   );
   const current = options[selectedIndex];
 
+  // Close the list when the user clicks outside it.
   useEffect(() => {
     if (!open) return;
     const onPointerDown = (event: PointerEvent) => {
@@ -62,16 +64,19 @@ export function Select<T extends string | number>({
     listRef.current?.children[active]?.scrollIntoView({ block: "nearest" });
   }, [open, active]);
 
+  /** Open the list with the current choice highlighted. */
   function show() {
     setActive(selectedIndex);
     setOpen(true);
   }
 
+  /** Pick an option and close the list. */
   function choose(index: number) {
     onChange(options[index].value);
     setOpen(false);
   }
 
+  /** Keyboard support: arrows, Home/End, Enter/Space, Escape and Tab. */
   function onKeyDown(event: React.KeyboardEvent) {
     switch (event.key) {
       case "ArrowDown":

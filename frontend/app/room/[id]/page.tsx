@@ -15,7 +15,7 @@
  * is claude.md invariant 1 as the user experiences it.
  */
 
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";  // read the id; move to the report
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
@@ -26,16 +26,20 @@ import {
   Notices,
   RoundTable,
   type SeatInfo,
-} from "@/app/immersive/parts";
-import { Icon, type IconName } from "@/app/icons";
-import { ObserverCard } from "@/app/observer-card";
-import { ApiError, sessions } from "@/lib/api";
-import { useAuth } from "@/lib/auth-context";
-import { useMediaRoom } from "@/lib/use-media-room";
-import { useAgentVoicesMuted } from "@/lib/agent-audio";
-import { useSessionSocket } from "@/lib/use-session-socket";
+} from "@/app/immersive/parts";  // room building blocks
+import { Icon, type IconName } from "@/app/icons";  // icon set
+import { ObserverCard } from "@/app/observer-card";  // live Observer notes tab
+import { ApiError, sessions } from "@/lib/api";  // session calls and error type
+import { useAuth } from "@/lib/auth-context";  // current user
+import { useMediaRoom } from "@/lib/use-media-room";  // LiveKit room + recording hook
+import { useAgentVoicesMuted } from "@/lib/agent-audio";  // mute AI voices
+import { useSessionSocket } from "@/lib/use-session-socket";  // control-plane WebSocket hook
 import type { GDSession, MediaToken, TranscriptOut } from "@/lib/types";
 
+/**
+ * The live group discussion: round table, video strip, controls, live transcript, people and
+ * Observer tabs.
+ */
 export default function RoomPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
@@ -52,6 +56,7 @@ export default function RoomPage() {
   const socket = useSessionSocket(id ?? null);
   const [voicesMuted, setVoicesMuted] = useAgentVoicesMuted();
 
+  /** Load the session row (returns it so callers can use it immediately). */
   const load = useCallback(async () => {
     try {
       const loaded = await sessions.get(id);
@@ -125,6 +130,7 @@ export default function RoomPage() {
 
   const isHost = session != null && user != null && session.host_id === user.id;
 
+  /** Host: end the discussion and open the report. */
   async function endSession() {
     setEnding(true);
     try {
@@ -143,6 +149,7 @@ export default function RoomPage() {
   const roster = socket.lobby?.participants ?? session.participants;
 
   const hasVideo = !observing || media.remotes.length > 0;
+  // One seat per participant; speaking comes from the control socket or LiveKit.
   const seats: SeatInfo[] = roster.map((participant) => {
     const speaking =
       socket.speaking.includes(participant.candidate_label) ||
@@ -396,6 +403,7 @@ export default function RoomPage() {
   );
 }
 
+/** A round icon button with a label, used for the call controls. */
 function ControlButton({
   icon,
   label,
@@ -439,6 +447,7 @@ function useNotes(sessionId: string): [string, (value: string) => void] {
       // Storage can be unavailable; notes then last only while the page is open.
     }
   }, [key]);
+  /** Save the new note text in state and localStorage. */
   const update = (next: string) => {
     setValue(next);
     try {

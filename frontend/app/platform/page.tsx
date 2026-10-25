@@ -10,13 +10,14 @@
  * replaces the first rather than inheriting their account.
  */
 
-import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";  // read the query string and redirect
+import { Suspense, useEffect, useRef, useState } from "react";  // suspense, effects and refs
 
-import { platformSignIn, tokenStore } from "@/lib/api";
-import { useAuth } from "@/lib/auth-context";
-import { markEmbedded } from "@/lib/embedded";
+import { platformSignIn, tokenStore } from "@/lib/api";  // platform sign-in and token storage
+import { useAuth } from "@/lib/auth-context";  // reload the user after sign-in
+import { markEmbedded } from "@/lib/embedded";  // mark this tab as embedded in the platform shell
 
+/** Where to go after sign-in when no `next` path is given. */
 const DEFAULT_NEXT = "/practice/new";
 
 /** Only a path inside GD; anything else would make this an open redirect. */
@@ -24,6 +25,7 @@ function safeNext(next: string | null): string {
   return next && next.startsWith("/") && !next.startsWith("//") ? next : DEFAULT_NEXT;
 }
 
+/** Exchange the platform's identity for GD tokens, then redirect. */
 function PlatformSignIn() {
   const params = useSearchParams();
   const router = useRouter();
@@ -70,6 +72,7 @@ function PlatformSignIn() {
   );
 }
 
+/** Route wrapper (Suspense is required for useSearchParams). */
 export default function PlatformPage() {
   return (
     <Suspense fallback={null}>

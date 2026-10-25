@@ -7,8 +7,10 @@
  */
 
 export type GDType = "technical" | "leadership" | "hr_social" | "general";
+/** How demanding a session's topic and personas are. */
 export type Difficulty = "beginner" | "intermediate" | "advanced";
 
+/** Lifecycle state of a session (mirrors the backend state machine). */
 export type SessionState =
   | "CREATED"
   | "WAITING"
@@ -22,6 +24,7 @@ export type SessionState =
   | "FAILED"
   | "RETRYING";
 
+/** Where one participant is in the session. */
 export type ParticipantState =
   | "INVITED"
   | "JOINED"
@@ -31,6 +34,7 @@ export type ParticipantState =
   | "RECONNECTED"
   | "LEFT";
 
+/** Progress of an evaluation job. */
 export type EvaluationState =
   | "QUEUED"
   | "PREPARING"
@@ -41,6 +45,7 @@ export type EvaluationState =
   | "COMPLETED"
   | "FAILED";
 
+/** A person seated in a session. */
 export interface Participant {
   id: string;
   user_id: string;
@@ -51,6 +56,7 @@ export interface Participant {
   joined_at: string;
 }
 
+/** A full group discussion session. */
 export interface GDSession {
   mode?: "group" | "solo";
   id: string;
@@ -75,6 +81,7 @@ export interface GDSession {
   participants: Participant[];
 }
 
+/** Compact session row for lists. */
 export interface SessionSummary {
   id: string;
   code: string;
@@ -97,12 +104,14 @@ export interface RollingState {
   observations?: string[];
 }
 
+/** A simulated AI participant (name + persona). */
 export interface AgentSpec {
   name: string;
   persona: string;
   talkativeness: "low" | "medium" | "high";
 }
 
+/** What the lobby screen renders: occupancy, readiness and participants. */
 export interface LobbyView {
   lobby_id: string;
   session_id: string;
@@ -126,6 +135,7 @@ export interface TimerView {
   warning: boolean;
 }
 
+/** The topic as released by the server (empty until preparation begins). */
 export interface TopicView {
   session_id: string;
   topic: string;
@@ -134,6 +144,7 @@ export interface TopicView {
   released: boolean;
 }
 
+/** LiveKit join credentials. */
 export interface MediaToken {
   url: string;
   token: string;
@@ -141,6 +152,7 @@ export interface MediaToken {
   identity: string;
 }
 
+/** One timestamped line of the transcript. */
 export interface TranscriptLine {
   timestamp: string;
   candidate_label: string;
@@ -150,6 +162,7 @@ export interface TranscriptLine {
   confidence: number;
 }
 
+/** The full transcript plus counts. */
 export interface TranscriptOut {
   session_id: string;
   segment_count: number;
@@ -174,6 +187,7 @@ export interface CandidateMetrics {
   response_latency_seconds: number;
 }
 
+/** Session metrics: per-candidate numbers and the interaction graph. */
 export interface MetricsOut {
   session_id: string;
   total_speaking_seconds: number;
@@ -183,6 +197,7 @@ export interface MetricsOut {
   under_participating: string[];
 }
 
+/** Status and versions of an evaluation job. */
 export interface EvaluationStatus {
   job_id: string;
   session_id: string;
@@ -200,6 +215,7 @@ export interface EvaluationStatus {
   completed_at: string | null;
 }
 
+/** A timestamped quote or observation backing a score. */
 export interface EvidenceItem {
   timestamp: string;
   summary: string;
@@ -207,6 +223,7 @@ export interface EvidenceItem {
   confidence?: number;
 }
 
+/** One scored dimension with strengths, weaknesses and evidence. */
 export interface DimensionDetail {
   dimension: string;
   score_10: number;
@@ -276,6 +293,7 @@ export interface LobbyListItem {
   preparation_seconds: number;
 }
 
+/** A built-in AI persona offered on the practice screen. */
 export interface PersonaPreset {
   key: string;
   name: string;
@@ -285,6 +303,7 @@ export interface PersonaPreset {
   eagerness: number;
 }
 
+/** A persona the student picked (preset key or custom definition). */
 export interface PersonaChoice {
   preset?: string;
   name?: string;
@@ -308,6 +327,7 @@ export interface GroupReportBody {
   agent_failures?: string[];
 }
 
+/** A stored report wrapper; `body` is the candidate or group report. */
 export interface ReportOut<T> {
   session_id: string;
   candidate_label: string | null;
@@ -315,6 +335,7 @@ export interface ReportOut<T> {
   created_at: string;
 }
 
+/** A candidate's final score with per-dimension breakdown. */
 export interface ScoreOut {
   candidate_label: string;
   overall: number;
@@ -347,6 +368,7 @@ export type NotificationKind =
   | "evaluation_completed"
   | "report_available";
 
+/** One in-app notification. */
 export interface NotificationItem {
   id: string;
   session_id: string | null;
@@ -359,6 +381,7 @@ export interface NotificationItem {
   created_at: string;
 }
 
+/** Notifications plus the unread count. */
 export interface NotificationList {
   unread: number;
   items: NotificationItem[];

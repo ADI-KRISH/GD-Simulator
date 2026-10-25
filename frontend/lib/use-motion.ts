@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState } from "react";  // state and effects for the animation hooks
 
+/** True if the user prefers reduced motion (so animations are skipped). */
 function reducedMotion(): boolean {
   try {
     return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
