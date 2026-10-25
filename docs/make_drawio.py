@@ -119,13 +119,13 @@ def agentic() -> None:
     d.edge(tr, me, "speech events")
     d.edge(tr, ob)
     d.group("Stage 2 · after the session (LangGraph state graph)", 30, 260, 1040, 400)
-    plan = d.box("Plan\nroster by discussion type;\none evidence packet per candidate", 50, 320, h=70)
-    spec = d.box("Specialist agents ×6, in parallel\ncontent · communication · leadership\ncollaboration · critical thinking · behaviour", 250, 305, 190, 100, "llm")  # fmt: skip
+    plan = d.box("Plan (plain code, no LLM)\nlookup: 4-5 specialists per GD type;\nshared context + packet per candidate", 50, 320, h=70)
+    spec = d.box("Specialist agents (4-5 of 6), in parallel\ncontent · communication · leadership\ncollaboration · critical thinking · behaviour", 250, 305, 190, 100, "llm")  # fmt: skip
     tools = d.box("Evidence tools (read-only)\ntranscript range · turns · find quotes\nmetrics · interactions · verify segment", 250, 450, 190, 80)  # fmt: skip
     collect = d.box("Collect\nusable · failed · conflicts (>2 pts)", 490, 320)
-    critic = d.box("Critic (deterministic)\ntimes, quotes, speaker, confidence", 680, 320, 180)
+    critic = d.box("Critic (code, no tools)\ntimes, quotes, speaker, confidence;\nhints: real speaker + real lines", 680, 320, 180)
     agg = d.box("Aggregate (code)\nfixed weights · penalty · review flags", 880, 320, 170)
-    rev = d.box("Revise, once\nflagged and failed agents re-run", 680, 450, 180, kind="llm")
+    rev = d.box("Revise, once, in parallel\nre-asks flagged + failed specialists\nwith critic hints, same tools", 680, 450, 180, kind="llm")
     narr = d.box("Synthesis agent per candidate\n+ group report agent", 880, 450, 170, kind="llm")
     rep = d.box("Reports stored\nusers notified", 680, 570, 180, kind="data")
     wipe = d.box("Delete raw audio\ntranscripts and reports stay", 440, 570, 200)

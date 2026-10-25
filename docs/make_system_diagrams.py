@@ -148,15 +148,15 @@ def draw_agentic() -> None:
     arrow(ax, right(met), left(per), color="#4a5170")
 
     lane(ax, 2, 20, 186, 58, "2  AFTER THE SESSION  ·  LangGraph, one job per session", align="right")
-    plan = box(ax, 6, 50, 24, 16, "PLAN\nroster by GD type\nevidence packet\nper candidate", "code")
+    plan = box(ax, 6, 50, 24, 16, "PLAN (plain code)\nlookup: 4-5 specialists\nper GD type; shared\ncontext + packet each", "code")
     spec = box(ax, 36, 40, 52, 30,
-               "SPECIALIST AGENTS (parallel)\n\n content · communication\n leadership · collaboration\n critical thinking · behaviour\n\n"
+               "SPECIALIST AGENTS (4-5 of these 6, parallel)\n\n content · communication\n leadership · collaboration\n critical thinking · behaviour\n\n"
                "each returns: score, confidence,\nstrengths, weaknesses, evidence", "llm", 7.8)
     tools = box(ax, 36, 22, 52, 13,
                 "EVIDENCE TOOLS (read-only code)\nget_transcript_range · get_turns · find_quotes\nget_candidate_metrics · get_interactions · verify_segment", "code", 7.4)
     col = box(ax, 96, 54, 22, 14, "COLLECT\nmissing results\nconflicts", "code")
-    cri = box(ax, 96, 36, 22, 14, "CRITIC\nquote real?\nspeaker certain?\nconfidence earned?", "code", 7.6)
-    rev = box(ax, 96, 22, 22, 10, "REVISE once\nretry failed agents", "llm", 7.4)
+    cri = box(ax, 96, 36, 22, 14, "CRITIC (code, no tools)\ntime real? quote real?\nspeaker certain?\nconfidence earned?", "code", 7.2)
+    rev = box(ax, 96, 22, 22, 10, "REVISE once, parallel\nre-asks specialists\nwith critic hints", "llm", 6.8)
     agg = box(ax, 126, 46, 26, 22, "AGGREGATE\nfixed weights\ninterruption penalty\noverall 0-100\nreview flags", "code")
     syn = box(ax, 160, 54, 26, 14, "SYNTHESIS\nagent per candidate\nwrites the narrative", "llm")
     grp = box(ax, 160, 36, 26, 14, "GROUP REPORT\nagent: group story", "llm")
@@ -167,8 +167,8 @@ def draw_agentic() -> None:
     arrow(ax, bottom(spec), top(tools), "look up", dy=-0.4)
     arrow(ax, right(spec), left(col))
     arrow(ax, bottom(col), top(cri))
-    arrow(ax, bottom(cri), top(rev), "problems", dy=-0.2)
-    arrow(ax, left(rev), (66, 40), "revised verdict", curve=-0.3, label_at=0.25, dy=-0.4)
+    arrow(ax, bottom(cri), top(rev), "problems + real lines", dy=-0.2)
+    arrow(ax, left(rev), (66, 40), "re-ask, same tools", curve=-0.3, label_at=0.25, dy=-0.4)
     arrow(ax, right(cri), left(agg), curve=-0.15)
     arrow(ax, right(agg), left(syn))
     arrow(ax, bottom(syn), top(grp))
