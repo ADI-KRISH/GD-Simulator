@@ -5,10 +5,9 @@
  * with its prompt, output, tokens, cost and timing. Hosts and admins only.
  */
 
-import { useCallback, useEffect, useState } from "react";  // state and effects
+import { useEffect, useState } from "react";  // state and effects
 
 import { Skeleton } from "@/app/motion";  // loading placeholder
-import { ApiError } from "@/lib/api";  // error type
 import { useAuth } from "@/lib/auth-context";  // require sign-in
 import {
   observability,
@@ -22,7 +21,10 @@ import {
   type TraceRow,
 } from "@/lib/observability";  // dashboard client and shapes
 
-type Tab = "overview" | "calls" | "sessions" | "quality";
+import { Alerts, Datasets, SaveToDataset, Waterfall } from "./extras";  // alerts, trace, datasets
+import { clock, ms, num, usd, useLoad } from "./shared";  // formatting and loading
+
+type Tab = "overview" | "calls" | "sessions" | "datasets" | "quality";
 
 const WINDOWS: { hours: number; label: string }[] = [
   { hours: 1, label: "1h" },
@@ -31,15 +33,6 @@ const WINDOWS: { hours: number; label: string }[] = [
   { hours: 168, label: "7d" },
   { hours: 720, label: "30d" },
 ];
-
-/** 1234 -> "1.2 s", 80 -> "80 ms". */
-const ms = (v: number) => (v >= 1000 ? `${(v / 1000).toFixed(1)} s` : `${Math.round(v)} ms`);
-/** Dollars with enough digits for tiny per-call costs. */
-const usd = (v: number) => (v === 0 ? "$0" : v < 0.01 ? `$${v.toFixed(5)}` : `$${v.toFixed(3)}`);
-/** 12345 -> "12.3k". */
-const num = (v: number) => (v >= 10_000 ? `${(v / 1000).toFixed(1)}k` : String(v));
-/** Local time of day for an ISO timestamp. */
-const clock = (iso: string) => new Date(iso).toLocaleTimeString([], { hour12: false });
 
 /** The dashboard. */
 export default function ObservabilityPage() {
@@ -99,7 +92,7 @@ export default function ObservabilityPage() {
       </header>
 
       <nav className="seg obs-tabs" aria-label="Sections">
-        {(["overview", "calls", "sessions", "quality"] as Tab[]).map((t) => (
+        {(["overview", "calls", "sessions", "datasets", "quality"] as Tab[]).map((t) => (
           <button
             key={t}
             type="button"
@@ -121,27 +114,10 @@ export default function ObservabilityPage() {
         />
       )}
       {tab === "sessions" && <Sessions hours={hours} tick={tick} onOpen={openCalls} />}
+      {tab === "datasets" && <Datasets tick={tick} />}
       {tab === "quality" && <QualityTab hours={hours} tick={tick} />}
     </div>
   );
-}
-
-/** Load data with the dashboard's shared loading/error handling. */
-function useLoad<T>(load: () => Promise<T>, deps: unknown[]) {
-  const [data, setData] = useState<T | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const run = useCallback(load, deps);
-  useEffect(() => {
-    let live = true;
-    run()
-      .then((d) => live && (setData(d), setError(null)))
-      .catch((e) => live && setError(e instanceof ApiError ? e.message : "could not load"));
-    return () => {
-      live = false;
-    };
-  }, [run]);
-  return { data, error };
 }
 
 /** One headline number. */
@@ -245,6 +221,7 @@ function Overview({ hours, tick }: { hours: number; tick: number }) {
   const reply = data.reply_latency;
   return (
     <div className="stack" style={{ gap: "1.25rem" }}>
+      <Alerts tick={tick} />
       {t.calls === 0 && reply.count === 0 && (
         <div className="card">
           <h3>No traces yet</h3>
@@ -416,6 +393,7 @@ function Detail({ id, onClose }: { id: string; onClose: () => void }) {
             <button type="button" className="secondary" onClick={() => void navigator.clipboard?.writeText(body)}>
               Copy
             </button>
+            {data.kind === "llm" && <SaveToDataset spanId={id} />}
           </>
         )}
       </aside>
@@ -423,46 +401,65 @@ function Detail({ id, onClose }: { id: string; onClose: () => void }) {
   );
 }
 
-/** One row per session. */
+/** One row per session; pick one to see its trace tree. */
 function Sessions({ hours, tick, onOpen }: { hours: number; tick: number; onOpen: (id: string) => void }) {
   const { data, error } = useLoad<TraceRow[]>(() => observability.traces(hours), [hours, tick]);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [openId, setOpenId] = useState<string | null>(null);
   if (error) return <div className="alert alert--error">{error}</div>;
   if (!data) return <Skeleton rows={3} />;
   if (data.length === 0) return <p className="empty">No sessions traced in this window.</p>;
   return (
-    <div className="card obs-table-card">
-      <div className="obs-scroll">
-        <table className="obs-table">
-          <thead>
-            <tr>
-              <th>Session</th>
-              <th>Last call</th>
-              <th>Purposes</th>
-              <th>Calls</th>
-              <th>Errors</th>
-              <th>Tokens</th>
-              <th>Cost</th>
-              <th>Model p95</th>
-              <th>Reply p50 / p95</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.map((r) => (
-              <tr key={r.session_id} className="obs-row" onClick={() => onOpen(r.session_id)}>
-                <td className="obs-mono">{r.session_id.slice(0, 8)}</td>
-                <td>{new Date(r.last_at).toLocaleString()}</td>
-                <td>{r.purposes.join(", ")}</td>
-                <td>{r.calls}</td>
-                <td className={r.errors ? "obs-bad" : ""}>{r.errors}</td>
-                <td>{num(r.input_tokens + r.output_tokens)}</td>
-                <td>{usd(r.cost_usd)}</td>
-                <td>{ms(r.p95_ms)}</td>
-                <td>{r.reply_p50_ms ? `${ms(r.reply_p50_ms)} / ${ms(r.reply_p95_ms)}` : "—"}</td>
+    <div className="stack" style={{ gap: "1rem" }}>
+      <div className="card obs-table-card">
+        <div className="obs-scroll">
+          <table className="obs-table">
+            <thead>
+              <tr>
+                <th>Session</th>
+                <th>Last call</th>
+                <th>Purposes</th>
+                <th>Calls</th>
+                <th>Errors</th>
+                <th>Tokens</th>
+                <th>Cost</th>
+                <th>Model p95</th>
+                <th>Reply p50 / p95</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {data.map((r) => (
+                <tr
+                  key={r.session_id}
+                  className={`obs-row ${selected === r.session_id ? "obs-row--on" : ""}`}
+                  onClick={() => setSelected(r.session_id)}
+                >
+                  <td className="obs-mono">{r.session_id.slice(0, 8)}</td>
+                  <td>{new Date(r.last_at).toLocaleString()}</td>
+                  <td>{r.purposes.join(", ")}</td>
+                  <td>{r.calls}</td>
+                  <td className={r.errors ? "obs-bad" : ""}>{r.errors}</td>
+                  <td>{num(r.input_tokens + r.output_tokens)}</td>
+                  <td>{usd(r.cost_usd)}</td>
+                  <td>{ms(r.p95_ms)}</td>
+                  <td>{r.reply_p50_ms ? `${ms(r.reply_p50_ms)} / ${ms(r.reply_p95_ms)}` : "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
+      {selected && (
+        <>
+          <div>
+            <button type="button" className="secondary" onClick={() => onOpen(selected)}>
+              List this session&apos;s calls
+            </button>
+          </div>
+          <Waterfall sessionId={selected} onPick={setOpenId} />
+        </>
+      )}
+      {openId && <Detail id={openId} onClose={() => setOpenId(null)} />}
     </div>
   );
 }

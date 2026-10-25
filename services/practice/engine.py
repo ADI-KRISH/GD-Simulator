@@ -62,7 +62,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker  # DB sessio
 from services.ai_platform.bridge import UNNAMED_STUDENT  # placeholder name for unnamed students
 from services.llm import LLMError, get_persona_llm_provider  # model that voices the personas
 from services.observability.context import trace_context  # tag the call for the trace
-from services.observability.recorder import record, span  # latency and speech spans
+from services.observability.recorder import chain, record, span  # latency and speech spans
 from services.practice import panel  # pure decisions: stances, bids, repeats, prompts
 from services.practice import timing as clock  # clock phases and time guidance
 from services.realtime.hub import hub  # broadcast to the room
@@ -597,7 +597,11 @@ class PracticeRoom:
                     )
                 if label is None or self.user_active:
                     return
-                cut = await self._persona_turn(label, cue, target)
+                async with chain(
+                    f"persona turn: {self.personas[label]['name']}",
+                    purpose="persona", session_id=self.sid, agent=self.personas[label]["name"],
+                ):  # fmt: skip
+                    cut = await self._persona_turn(label, cue, target)
                 if cue in ("open", "hand", "time") or cut or self.user_active or self.concluded:
                     return  # after an invitation the floor is the student's
                 if self.forced:

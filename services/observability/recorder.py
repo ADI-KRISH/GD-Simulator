@@ -11,6 +11,7 @@ Contains:    `set_sink` (tests capture spans instead of writing them), `record`,
 import asyncio
 import logging
 import time
+import uuid
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -18,7 +19,7 @@ from typing import Any
 
 from services.common.config import settings
 from services.common.db import get_session_factory
-from services.observability.context import current
+from services.observability.context import current, trace_context
 from services.observability.models import Span
 from services.observability.pricing import cost_usd, price_of
 
@@ -47,6 +48,9 @@ def _clip(text: str | None) -> str | None:
 def record(**fields: Any) -> None:
     """Record one span. `fields` are the Span columns; the caller's tags are added."""
     fields = {**current(), **fields}
+    for key in ("id", "parent_id"):
+        if isinstance(fields.get(key), str):
+            fields[key] = uuid.UUID(fields[key])
     if _sink is not None:
         _sink(fields)
         return
@@ -95,3 +99,26 @@ async def span(kind: str, name: str, **fields: Any) -> AsyncIterator[dict]:
     finally:
         data["latency_ms"] = (time.perf_counter() - t0) * 1000
         record(**data)
+
+
+@asynccontextmanager
+async def chain(name: str, **tags: str) -> AsyncIterator[dict]:
+    """A parent span: every call made inside the block records this one as its parent.
+
+    `tags` (purpose, session_id, agent...) apply to the chain and to its children.
+    """
+    span_id = uuid.uuid4()
+    data: dict = {"id": span_id, "kind": "chain", "name": name, "started_at": datetime.now(UTC)}
+    t0 = time.perf_counter()
+    try:
+        with trace_context(parent_id=str(span_id), **tags):
+            try:
+                yield data
+            except Exception as exc:
+                data["status"] = "error"
+                data["error"] = f"{type(exc).__name__}: {exc}"[:2000]
+                raise
+    finally:
+        # Outside the block again, so the chain's own parent is whatever enclosed it.
+        data["latency_ms"] = (time.perf_counter() - t0) * 1000
+        record(**tags, **data)

@@ -162,6 +162,11 @@ class Settings(BaseSettings):
     trace_enabled: bool = True
     # Keep prompts and outputs in the trace. Off keeps timings and tokens only.
     trace_store_content: bool = True
+    # Alerts shown on the dashboard when the last hour crosses one of these.
+    alert_error_rate: float = 0.10
+    alert_p95_ms: float = 20_000
+    alert_reply_p95_ms: float = 6_000
+    alert_cost_usd_per_hour: float = 1.0
     # Privacy: delete a session's raw audio once its evaluation has completed.
     # Transcripts, scores and reports are kept.
     delete_audio_after_evaluation: bool = True

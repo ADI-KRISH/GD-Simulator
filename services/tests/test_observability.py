@@ -101,3 +101,88 @@ async def test_only_hosts_and_admins_may_read_traces(client, auth_header, host_a
     assert denied.status_code == 403
     ok = await client.get("/api/v1/observability/summary", headers=host_auth)
     assert ok.status_code == 200 and ok.json()["totals"]["calls"] == 0
+
+
+# ---- trace tree, alerts, datasets ------------------------------------------------
+
+
+async def test_calls_inside_a_chain_point_at_it(spans):
+    from services.observability.recorder import chain
+
+    provider = TracingProvider(StubLLM())
+    async with chain("outer", purpose="evaluation", session_id="s9"):
+        async with chain("inner"):
+            await provider.complete_json(system="s", prompt="p", schema=SCHEMA)
+    by_name = {s["name"]: s for s in spans}
+    outer, inner = by_name["outer"], by_name["inner"]
+    llm = next(s for s in spans if s["kind"] == "llm")
+    assert outer.get("parent_id") is None
+    assert inner["parent_id"] == outer["id"] and llm["parent_id"] == inner["id"]
+    assert llm["session_id"] == "s9" and llm["purpose"] == "evaluation"  # tags flow down
+
+
+def test_match_score_compares_what_is_comparable():
+    from services.observability.experiments import match_score
+
+    expected = {"score": 7, "speak": True, "text": "x" * 80, "tags": ["a", "b"]}
+    same = {"score": 8, "speak": True, "text": "anything else", "tags": ["a", "b"]}
+    assert match_score(expected, same) == 1.0  # a point apart agrees; long text is ignored
+    assert match_score(expected, {"score": 3, "speak": False, "tags": ["a"]}) < 0.5
+    assert match_score({"text": "y" * 80}, {"text": "z"}) is None
+
+
+async def test_a_saved_call_can_be_replayed_and_compared(client, host_auth, session_factory):
+    from datetime import UTC, datetime
+
+    from services.observability.models import Span
+
+    async with session_factory() as db:
+        span_row = Span(
+            started_at=datetime.now(UTC), kind="llm", purpose="evaluation", agent="content",
+            model="stub-deterministic", system_prompt="sys", prompt="judge this",
+            output={"ok": True}, meta={"schema": SCHEMA},
+        )  # fmt: skip
+        db.add(span_row)
+        await db.commit()
+        span_id = str(span_row.id)
+    base = "/api/v1/observability"
+    saved = await client.post(
+        f"{base}/datasets/cases", headers=host_auth, json={"span_id": span_id, "dataset": "d1"}
+    )
+    assert saved.status_code == 201 and saved.json()["expected"] == {"ok": True}
+    assert (await client.get(f"{base}/datasets", headers=host_auth)).json() == [
+        {"dataset": "d1", "cases": 1, "runs": 0}
+    ]
+    ran = await client.post(
+        f"{base}/datasets/d1/run", headers=host_auth, json={"label": "baseline"}
+    )
+    assert ran.status_code == 200 and ran.json()["cases"] == 1 and ran.json()["errors"] == 0
+    runs = (await client.get(f"{base}/datasets/d1/runs", headers=host_auth)).json()
+    assert [r["label"] for r in runs] == ["baseline"]
+    detail = await client.get(f"{base}/runs/{runs[0]['run_id']}", headers=host_auth)
+    assert detail.json()[0]["expected"] == {"ok": True}
+    case_id = saved.json()["id"]
+    assert (
+        await client.delete(f"{base}/datasets/cases/{case_id}", headers=host_auth)
+    ).status_code == 204
+    assert (await client.get(f"{base}/datasets", headers=host_auth)).json() == []
+
+
+async def test_alerts_fire_on_errors_and_stay_quiet_when_healthy(
+    client, host_auth, session_factory
+):
+    from datetime import UTC, datetime
+
+    from services.observability.models import Span
+
+    assert (await client.get("/api/v1/observability/alerts", headers=host_auth)).json() == []
+    async with session_factory() as db:
+        for _ in range(6):
+            db.add(Span(started_at=datetime.now(UTC), kind="llm", purpose="persona",
+                        model="stub", latency_ms=50, status="error"))  # fmt: skip
+        await db.commit()
+    alerts = (await client.get("/api/v1/observability/alerts", headers=host_auth)).json()
+    assert any(a["title"] == "High error rate" for a in alerts)
+
+    trace = await client.get("/api/v1/observability/trace/none", headers=host_auth)
+    assert trace.json() == []

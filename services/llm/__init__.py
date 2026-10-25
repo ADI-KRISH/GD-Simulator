@@ -35,6 +35,7 @@ __all__ = [
     "StubLLM",
     "get_llm_provider",
     "get_persona_llm_provider",
+    "get_provider_for_model",
     "set_llm_provider",
 ]
 
@@ -109,6 +110,31 @@ def get_persona_llm_provider() -> LLMProvider:
 
             _persona_provider = TracingProvider(_persona_provider)
     return _persona_provider
+
+
+def get_provider_for_model(model: str) -> LLMProvider:
+    """The main provider's vendor with a different model, for experiments.
+
+    The stub (and any provider that is not a real vendor) cannot change model, so
+    it is returned as is.
+    """
+    base = get_llm_provider()
+    model = model.strip()
+    if not model or base.model == model or base.name not in {"openai", "anthropic"}:
+        return base
+    if base.name == "openai":
+        from services.llm.openai_provider import OpenAIProvider
+
+        provider: LLMProvider = OpenAIProvider(model=model)
+    else:
+        from services.llm.anthropic_provider import AnthropicProvider
+
+        provider = AnthropicProvider(model=model)
+    if settings.trace_enabled:
+        from services.observability.tracing import TracingProvider
+
+        provider = TracingProvider(provider)
+    return provider
 
 
 def set_llm_provider(provider: LLMProvider | None) -> None:

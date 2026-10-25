@@ -54,10 +54,8 @@ from services.common.contracts import (  # validation gate for every agent outpu
 )
 from services.evaluation.evidence import EvidencePacket, SharedContext  # prompt inputs
 from services.llm import LLMError, get_llm_provider  # provider-agnostic LLM access
-from services.llm.base import LLMResult, ToolDefinition
-from services.observability.context import (
-    trace_context,  # tag the call for the trace  # result type and tool description
-)
+from services.llm.base import LLMResult, ToolDefinition  # result type and tool description
+from services.observability.recorder import chain  # group the call under its agent
 
 logger = logging.getLogger(__name__)
 
@@ -235,12 +233,10 @@ async def _complete(
     """One model call: tool-using when evidence tools are supplied, else plain JSON."""
     # The pinned enum names the candidate on the one-candidate path (for the trace tags).
     pinned = schema.get("properties", {}).get("candidate_id", {}).get("enum", [])
-    with trace_context(
-        purpose="evaluation",
-        agent=agent.name,
-        dimension=agent.dimension,
-        candidate=pinned[0] if len(pinned) == 1 else None,
-    ):
+    tags = {"purpose": "evaluation", "agent": agent.name, "dimension": agent.dimension}
+    if len(pinned) == 1:
+        tags["candidate"] = pinned[0]
+    async with chain(f"agent: {agent.name}", **tags):
         # With tools: let the model look things up (and explain how, via TOOL_GUIDANCE).
         if tools:
             return await provider.complete_with_tools(

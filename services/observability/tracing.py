@@ -12,6 +12,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
+from services.common.config import settings
 from services.llm.base import LLMProvider, LLMResult, ToolDefinition
 from services.observability.context import current
 from services.observability.recorder import record
@@ -88,6 +89,8 @@ class TracingProvider:
             "schema_fields": list(schema.get("properties", {})),
             "tools": tools or [],
         }
+        if settings.trace_store_content:
+            meta["schema"] = schema  # lets a saved call be replayed
         base = {
             "kind": "llm",
             "started_at": datetime.now(UTC),

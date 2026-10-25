@@ -90,7 +90,7 @@ async def summary(db: AsyncSession, hours: int, session_id: str | None = None) -
     rows = await _window(db, hours, session_id)
     llm = [r for r in rows if r.kind == "llm"]
     speech = {kind: [r for r in rows if r.kind == kind] for kind in ("stt", "tts")}
-    replies = [r.latency_ms for r in rows if r.kind == "latency"]
+    replies = [r.latency_ms for r in rows if r.kind == "latency" and r.name == "reply_latency"]
     ttfb = [r.ttfb_ms for r in speech["tts"] if r.ttfb_ms is not None]
 
     step = _bucket(hours)
@@ -153,7 +153,7 @@ async def traces(db: AsyncSession, hours: int) -> list[dict[str, Any]]:
     out = []
     for session_id, rows in groups.items():
         llm = [r for r in rows if r.kind == "llm"]
-        replies = [r.latency_ms for r in rows if r.kind == "latency"]
+        replies = [r.latency_ms for r in rows if r.kind == "latency" and r.name == "reply_latency"]
         out.append({
             "session_id": session_id,
             **_stats(llm),
@@ -164,6 +164,65 @@ async def traces(db: AsyncSession, hours: int) -> list[dict[str, Any]]:
             "reply_p95_ms": percentile(replies, 95),
         })  # fmt: skip
     return sorted(out, key=lambda t: t["last_at"], reverse=True)
+
+
+async def trace_tree(db: AsyncSession, session_id: str) -> list[dict[str, Any]]:
+    """Every span of one session with its parent link, oldest first (the waterfall's input)."""
+    rows = await db.execute(
+        select(Span.id, Span.parent_id, *_LIGHT, Span.error)
+        .where(Span.session_id == session_id)
+        .order_by(Span.started_at)
+        .limit(3000)
+    )
+    return [
+        {
+            **r._asdict(),
+            "id": str(r.id),
+            "parent_id": str(r.parent_id) if r.parent_id else None,
+            "started_at": _as_utc(r.started_at).isoformat(),
+        }
+        for r in rows
+    ]
+
+
+async def alerts(db: AsyncSession) -> list[dict[str, str]]:
+    """What is wrong in the last hour, judged against the thresholds in settings."""
+    from services.common.config import settings
+
+    data = await summary(db, 1)
+    totals, reply = data["totals"], data["reply_latency"]
+    found: list[dict[str, str]] = []
+    if totals["calls"] >= 5 and totals["error_rate"] > settings.alert_error_rate:
+        found.append({
+            "level": "error", "title": "High error rate",
+            "detail": f"{totals['error_rate'] * 100:.0f}% of {totals['calls']} model calls failed "
+                      f"in the last hour (limit {settings.alert_error_rate * 100:.0f}%).",
+        })  # fmt: skip
+    if totals["calls"] >= 5 and totals["p95_ms"] > settings.alert_p95_ms:
+        found.append({
+            "level": "warn", "title": "Slow model calls",
+            "detail": f"p95 latency {totals['p95_ms'] / 1000:.1f} s (limit "
+                      f"{settings.alert_p95_ms / 1000:.0f} s).",
+        })  # fmt: skip
+    if reply["count"] >= 3 and reply["p95_ms"] > settings.alert_reply_p95_ms:
+        found.append({
+            "level": "warn", "title": "Slow replies in practice",
+            "detail": f"Students waited {reply['p95_ms'] / 1000:.1f} s at p95 for a persona to "
+                      f"answer (limit {settings.alert_reply_p95_ms / 1000:.0f} s).",
+        })  # fmt: skip
+    if totals["cost_usd"] > settings.alert_cost_usd_per_hour:
+        found.append({
+            "level": "warn", "title": "Spend above budget",
+            "detail": f"${totals['cost_usd']:.2f} in the last hour (limit "
+                      f"${settings.alert_cost_usd_per_hour:.2f}).",
+        })  # fmt: skip
+    if totals["unpriced_calls"]:
+        found.append({
+            "level": "info", "title": "Unpriced model",
+            "detail": f"{totals['unpriced_calls']} calls used a model with no price in "
+                      "observability/pricing.py, so their cost shows as $0.",
+        })  # fmt: skip
+    return found
 
 
 async def list_spans(

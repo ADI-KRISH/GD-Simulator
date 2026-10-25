@@ -136,4 +136,92 @@ export const observability = {
   span: (id: string) => request<SpanDetail>(`/api/v1/observability/spans/${id}`, { auth: true }),
   quality: (hours: number) =>
     request<Quality>(`/api/v1/observability/quality${query({ hours })}`, { auth: true }),
+  trace: (sessionId: string) =>
+    request<TreeSpan[]>(`/api/v1/observability/trace/${sessionId}`, { auth: true }),
+  alerts: () => request<Alert[]>("/api/v1/observability/alerts", { auth: true }),
+  datasets: () => request<DatasetRow[]>("/api/v1/observability/datasets", { auth: true }),
+  cases: (dataset: string) =>
+    request<CaseRow[]>(`/api/v1/observability/datasets/${encodeURIComponent(dataset)}/cases`, {
+      auth: true,
+    }),
+  saveCase: (span_id: string, dataset: string) =>
+    request<CaseRow>("/api/v1/observability/datasets/cases", {
+      method: "POST",
+      auth: true,
+      body: { span_id, dataset },
+    }),
+  deleteCase: (id: string) =>
+    request<void>(`/api/v1/observability/datasets/cases/${id}`, { method: "DELETE", auth: true }),
+  runDataset: (dataset: string, body: { model: string; system_prompt: string; label: string }) =>
+    request<RunSummary>(`/api/v1/observability/datasets/${encodeURIComponent(dataset)}/run`, {
+      method: "POST",
+      auth: true,
+      body,
+    }),
+  runs: (dataset: string) =>
+    request<RunSummary[]>(`/api/v1/observability/datasets/${encodeURIComponent(dataset)}/runs`, {
+      auth: true,
+    }),
+  runResults: (runId: string) =>
+    request<RunResult[]>(`/api/v1/observability/runs/${runId}`, { auth: true }),
 };
+
+/** A problem found in the last hour. */
+export interface Alert {
+  level: "error" | "warn" | "info";
+  title: string;
+  detail: string;
+}
+
+/** A span with its parent link (the waterfall's input). */
+export interface TreeSpan extends Omit<SpanRow, "preview"> {
+  parent_id: string | null;
+}
+
+/** A dataset's headline counts. */
+export interface DatasetRow {
+  dataset: string;
+  cases: number;
+  runs: number;
+}
+
+/** A saved test case. */
+export interface CaseRow {
+  id: string;
+  dataset: string;
+  purpose: string;
+  agent: string | null;
+  model: string;
+  prompt: string;
+  system_prompt: string;
+  expected: unknown;
+  note: string;
+}
+
+/** One experiment run's headline numbers. */
+export interface RunSummary {
+  run_id: string;
+  label: string;
+  model: string;
+  created_at: string | null;
+  cases: number;
+  errors: number;
+  avg_match: number | null;
+  p50_ms: number;
+  p95_ms: number;
+  input_tokens: number;
+  output_tokens: number;
+  cost_usd: number;
+}
+
+/** One case's answer in a run. */
+export interface RunResult {
+  case_id: string;
+  prompt: string;
+  expected: unknown;
+  output: unknown;
+  match: number | null;
+  latency_ms: number;
+  cost_usd: number;
+  error: string | null;
+}

@@ -254,3 +254,159 @@
   font-size: 0.82rem;
   line-height: 1.5;
 }
+
+.obs-row--on td {
+  background: var(--accent-soft);
+}
+
+/* Alerts. */
+.obs-alerts {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.obs-alert {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.75rem;
+  padding: 0.65rem 0.9rem;
+  border: 1px solid var(--border);
+  border-left-width: 4px;
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.obs-alert--error {
+  border-left-color: var(--danger);
+}
+
+.obs-alert--warn {
+  border-left-color: var(--warn);
+}
+
+.obs-alert--info {
+  border-left-color: var(--accent);
+}
+
+.obs-alert span {
+  color: var(--muted);
+}
+
+/* Trace waterfall. */
+.obs-wf {
+  display: grid;
+  gap: 2px;
+  overflow-x: auto;
+}
+
+.obs-wf-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 280px) 1fr 70px;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 3px 0.4rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.obs-wf-row:hover {
+  background: var(--accent-soft);
+}
+
+.obs-wf-name {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.obs-wf-track {
+  position: relative;
+  height: 14px;
+  border-radius: 4px;
+  background: var(--surface-2);
+}
+
+.obs-wf-bar {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-radius: 4px;
+  background: var(--accent);
+  min-width: 2px;
+}
+
+.obs-wf-bar--chain {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+  border: 1px solid var(--accent);
+}
+
+.obs-wf-bar--stt,
+.obs-wf-bar--tts {
+  background: var(--ok);
+}
+
+.obs-wf-bar--latency {
+  background: var(--warn);
+}
+
+.obs-wf-bar--error {
+  background: var(--danger);
+}
+
+.obs-wf-meta {
+  text-align: right;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.obs-kind {
+  padding: 0 0.4rem;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
+/* Save to dataset, and experiment comparison. */
+.obs-save {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.obs-case {
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.obs-case-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  font-weight: 600;
+  margin-bottom: 0.4rem;
+}
+
+.obs-diff {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.6rem;
+}
+
+@media (max-width: 700px) {
+  .obs-diff {
+    grid-template-columns: 1fr;
+  }
+
+  .obs-wf-row {
+    grid-template-columns: minmax(120px, 160px) 1fr 56px;
+  }
+}
