@@ -54,7 +54,10 @@ from services.common.contracts import (  # validation gate for every agent outpu
 )
 from services.evaluation.evidence import EvidencePacket, SharedContext  # prompt inputs
 from services.llm import LLMError, get_llm_provider  # provider-agnostic LLM access
-from services.llm.base import LLMResult, ToolDefinition  # result type and tool description
+from services.llm.base import LLMResult, ToolDefinition
+from services.observability.context import (
+    trace_context,  # tag the call for the trace  # result type and tool description
+)
 
 logger = logging.getLogger(__name__)
 
@@ -230,16 +233,26 @@ async def _complete(
     tools: list[ToolDefinition] | None,
 ) -> LLMResult:
     """One model call: tool-using when evidence tools are supplied, else plain JSON."""
-    # With tools: let the model look things up (and explain how, via TOOL_GUIDANCE).
-    if tools:
-        return await provider.complete_with_tools(
-            system=agent.system_prompt() + TOOL_GUIDANCE,
-            prompt=prompt,
-            tools=tools,
-            schema=schema,
+    # The pinned enum names the candidate on the one-candidate path (for the trace tags).
+    pinned = schema.get("properties", {}).get("candidate_id", {}).get("enum", [])
+    with trace_context(
+        purpose="evaluation",
+        agent=agent.name,
+        dimension=agent.dimension,
+        candidate=pinned[0] if len(pinned) == 1 else None,
+    ):
+        # With tools: let the model look things up (and explain how, via TOOL_GUIDANCE).
+        if tools:
+            return await provider.complete_with_tools(
+                system=agent.system_prompt() + TOOL_GUIDANCE,
+                prompt=prompt,
+                tools=tools,
+                schema=schema,
+            )
+        # Without tools: a single structured call.
+        return await provider.complete_json(
+            system=agent.system_prompt(), prompt=prompt, schema=schema
         )
-    # Without tools: a single structured call.
-    return await provider.complete_json(system=agent.system_prompt(), prompt=prompt, schema=schema)
 
 
 def _calls(result: LLMResult) -> list[dict[str, Any]]:

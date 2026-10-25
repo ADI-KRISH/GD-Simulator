@@ -34,6 +34,7 @@ from services.common.contracts import RollingState  # the Observer's final state
 from services.evaluation.aggregator import AggregatedScore  # computed scores (inputs, not outputs)
 from services.llm import get_llm_provider  # model that writes the group narrative
 from services.metrics.engine import SessionMetrics  # measured participation numbers
+from services.observability.context import trace_context  # tag the call for the trace
 
 logger = logging.getLogger(__name__)
 
@@ -149,12 +150,13 @@ async def synthesise_group(
         return {}
     try:
         # One structured call; the model only returns prose, never numbers.
-        result = await get_llm_provider().complete_json(
-            system=SYSTEM_PROMPT,
-            prompt=build_prompt(topic, scores, names, metrics, state, syntheses),
-            schema=RESPONSE_SCHEMA,
-            max_tokens=1200,
-        )
+        with trace_context(purpose="group_report", agent="group_report"):
+            result = await get_llm_provider().complete_json(
+                system=SYSTEM_PROMPT,
+                prompt=build_prompt(topic, scores, names, metrics, state, syntheses),
+                schema=RESPONSE_SCHEMA,
+                max_tokens=1200,
+            )
     except Exception as exc:
         # The narrative is optional: log and return empty rather than fail the report.
         logger.warning("group report agent failed", extra={"error": str(exc)})

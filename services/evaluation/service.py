@@ -89,6 +89,7 @@ from services.evaluation.tools import TurnRecord  # turn data for evidence tools
 from services.metrics import service as metrics_service  # deterministic metrics
 from services.notifications.models import NotificationKind  # notification types
 from services.notifications.service import notify  # tell users their report is ready
+from services.observability.context import trace_context  # tag model calls for the trace
 from services.observer import service as observer_service  # final rolling state
 from services.realtime.hub import hub  # push evaluation completion to the room
 from services.realtime.protocol import ServerEvent, server_frame  # WebSocket event frames
@@ -392,21 +393,26 @@ async def run_job(session: AsyncSession, job: EvaluationJob) -> EvaluationJob:
     #    `native` engine is the same stages driven by plain asyncio.
     await _set_job_state(session, job, EvaluationState.RUNNING)
     await session.commit()
-    outcome = await _orchestrate(
-        gd,
-        labels,
-        segments,
-        metrics,
-        state,
-        job.rubric,
-        attempt=job.attempts,
-        evaluation_version=job.evaluation_version,
-        turns=[
-            TurnRecord(t.candidate_label, t.start, t.end, t.interrupted_label, t.reply_to_label)
-            for t in tracked_turns
-        ],
-        interruptions=interruptions,
-    )
+    # Every model call from here to the group report is tagged with the session and run.
+    run_tag = f"eval v{job.evaluation_version} a{job.attempts}"
+    with trace_context(session_id=str(gd.id), run=run_tag):
+        outcome = await _orchestrate(
+            gd,
+            labels,
+            segments,
+            metrics,
+            state,
+            job.rubric,
+            attempt=job.attempts,
+            evaluation_version=job.evaluation_version,
+            turns=[
+                TurnRecord(
+                    t.candidate_label, t.start, t.end, t.interrupted_label, t.reply_to_label
+                )
+                for t in tracked_turns
+            ],
+            interruptions=interruptions,
+        )
 
     # Some agents failed: record that the job is degraded but continue with the rest.
     if outcome.failures:
@@ -509,7 +515,8 @@ async def run_job(session: AsyncSession, job: EvaluationJob) -> EvaluationJob:
     group = build_group_report(str(gd.id), gd.topic, scores, metrics, state)
     body = group.to_dict()
     # The group report agent writes the narrative; every figure in `body` stays computed.
-    narrative = await synthesise_group(gd.topic, scores, names, metrics, state, syntheses)
+    with trace_context(session_id=str(gd.id), run=run_tag):
+        narrative = await synthesise_group(gd.topic, scores, names, metrics, state, syntheses)
     if narrative:
         body["narrative"] = narrative
     if outcome.conflicts:

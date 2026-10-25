@@ -45,6 +45,7 @@ from sqlalchemy.ext.asyncio import AsyncSession  # database session
 from services.common.contracts import TranscriptSegment, validate_contract  # transcript contract
 from services.common.events import Event, publish  # announce transcript.created
 from services.common.storage import audio_key, get_object_store  # keep raw audio for retries
+from services.observability.recorder import span as trace_span  # time the speech-to-text call
 from services.session.models import GDSession  # session row type
 from services.speech import repository as repo  # data access
 from services.speech.chunking import chunk_index_for  # which 45s window a time falls in
@@ -188,7 +189,11 @@ async def transcribe_chunk(
     provider = get_stt_provider()
     # Any STT failure is contained here: mark the chunk FAILED and return.
     try:
-        transcription = await provider.transcribe(audio)
+        async with trace_span(
+            "stt", provider.name, purpose="speech", session_id=str(chunk.session_id),
+            provider=provider.name, meta={"audio_bytes": len(audio), "attempt": chunk.attempts},
+        ):  # fmt: skip
+            transcription = await provider.transcribe(audio)
     except Exception as exc:
         # Design §38: retry, keep the raw audio, reprocess the segment. The
         # live session is untouched.

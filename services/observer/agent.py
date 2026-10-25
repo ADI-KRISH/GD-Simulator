@@ -50,6 +50,7 @@ from services.common.contracts import (  # contract models and validation gate
     parse_rolling_state,
 )
 from services.llm import LLMError, get_llm_provider  # provider-agnostic LLM access
+from services.observability.context import trace_context  # tag the call for the trace
 from services.speech.chunking import Chunk  # a 45-second transcript window
 
 logger = logging.getLogger(__name__)
@@ -175,9 +176,10 @@ async def observe(
 
     # Ask for JSON matching the contract, then validate it before trusting it.
     try:
-        result = await provider.complete_json(
-            system=SYSTEM_PROMPT, prompt=prompt, schema=_observation_schema()
-        )
+        with trace_context(purpose="observer", agent="observer", session_id=session_id):
+            result = await provider.complete_json(
+                system=SYSTEM_PROMPT, prompt=prompt, schema=_observation_schema()
+            )
         # Re-attaches the real session id and rejects malformed output.
         state = parse_rolling_state(result.data, session_id)
     # Either failure keeps the previous state so the session is never affected.

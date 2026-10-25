@@ -25,6 +25,7 @@ from sqlalchemy.engine import Connection  # sync-style connection handed to Alem
 from services.auth import models as auth_models  # noqa: F401
 from services.common.config import settings
 from services.common.db import Base, build_engine
+from services.observability import models as observability_models  # noqa: F401
 
 # Alembic's config object, which exposes the values in alembic.ini.
 config = context.config

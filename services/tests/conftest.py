@@ -42,6 +42,7 @@ from services.common.config import settings  # settings, patched before the app 
 # before the service modules below import anything that reads the setting,
 # hence the deliberate mid-file imports.
 settings.bcrypt_rounds = 4
+settings.trace_enabled = False  # spans are covered by test_observability.py
 
 from services.auth import models as auth_models  # noqa: F401,E402  (registers tables)
 from services.common import events as events_module  # noqa: E402
@@ -53,6 +54,7 @@ from services.llm import set_llm_provider  # noqa: E402
 from services.llm.stub_provider import StubLLM  # noqa: E402
 from services.main import app  # noqa: E402
 from services.notifications import models as notification_models  # noqa: F401,E402
+from services.observability import models as observability_models  # noqa: F401,E402
 from services.session import models as session_models  # noqa: F401,E402  (registers tables)
 from services.speech import models as speech_models  # noqa: F401,E402  (registers tables)
 from services.speech.stt import StubSTT, set_stt_provider  # noqa: E402

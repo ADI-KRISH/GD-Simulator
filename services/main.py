@@ -55,6 +55,7 @@ from services.evaluation.worker import run_worker  # background evaluation worke
 from services.lobby.router import router as lobby_router  # lobby browse/join/ready
 from services.metrics.router import router as metrics_router  # metrics and observer state
 from services.notifications.router import router as notifications_router  # in-app inbox
+from services.observability.router import router as observability_router  # tracing dashboard API
 from services.observer.service import run_observer_loop  # background Observer loop
 from services.practice.router import router as practice_router  # solo practice vs AI personas
 from services.realtime.timer import run_ticker  # background session clock
@@ -163,5 +164,6 @@ app.include_router(notifications_router)
 app.include_router(realtime_router)
 app.include_router(simulation_router)
 app.include_router(practice_router)
+app.include_router(observability_router)
 app.include_router(platform_router)
 app.include_router(platform_deps_router)

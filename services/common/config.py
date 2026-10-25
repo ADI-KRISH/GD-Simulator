@@ -156,6 +156,12 @@ class Settings(BaseSettings):
     evaluation_strategy: str = "per_dimension"
     # Specialists use evidence tools and a critic audits them (vs. one-shot prompts).
     evaluation_agentic: bool = True
+
+    # --- Tracing (services/observability) ---
+    # Record every model/speech call with its timing, tokens and cost.
+    trace_enabled: bool = True
+    # Keep prompts and outputs in the trace. Off keeps timings and tokens only.
+    trace_store_content: bool = True
     # Privacy: delete a session's raw audio once its evaluation has completed.
     # Transcripts, scores and reports are kept.
     delete_audio_after_evaluation: bool = True

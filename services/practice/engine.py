@@ -61,6 +61,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker  # DB sessio
 
 from services.ai_platform.bridge import UNNAMED_STUDENT  # placeholder name for unnamed students
 from services.llm import LLMError, get_persona_llm_provider  # model that voices the personas
+from services.observability.context import trace_context  # tag the call for the trace
+from services.observability.recorder import record, span  # latency and speech spans
 from services.practice import panel  # pure decisions: stances, bids, repeats, prompts
 from services.practice import timing as clock  # clock phases and time guidance
 from services.realtime.hub import hub  # broadcast to the room
@@ -214,6 +216,7 @@ class PracticeRoom:
         self.hands = 0  # raised hands (EC-14.10: a distinct entry style)
         self._tasks: set[asyncio.Task] = set()  # typed turns in flight
         self.time_checks: set[str] = set()  # moderator time checks already given
+        self.reply_clock: float | None = None  # when the student last stopped (for latency)
 
     # ------------------------------------------------------------------ setup
 
@@ -316,6 +319,7 @@ class PracticeRoom:
 
     async def on_utterance_end(self) -> None:
         """The browser heard the student stop; remember when (the audio follows)."""
+        self.reply_clock = time.monotonic()  # the reply latency is measured from here
         if self.user_started is not None:
             self.user_ended = max(self._now(), self.user_started)
 
@@ -341,7 +345,12 @@ class PracticeRoom:
         # While transcribing, personas hold their reply (stt_pending > 0).
         self.stt_pending += 1
         try:
-            transcription = await get_stt_provider().transcribe(blob)
+            stt = get_stt_provider()
+            async with span(
+                "stt", stt.name, purpose="practice", session_id=self.sid, provider=stt.name,
+                meta={"audio_bytes": len(blob)},
+            ):  # fmt: skip
+                transcription = await stt.transcribe(blob)
         except Exception as exc:  # STT vendor/runtime failure must not kill the room
             logger.warning("practice STT failed", extra={"error": str(exc)})
             await self._send_json(
@@ -375,6 +384,7 @@ class PracticeRoom:
         used to be squeezed into the instant before "now": three typed points
         came to two seconds of speaking time, and the scoring reads speaking time.
         """
+        self.reply_clock = time.monotonic()
         # Tidy whitespace and cap the length; ignore too-short text or text outside LIVE.
         text = " ".join(text.split())[:MAX_TYPED_CHARS]
         if len(re.findall(r"\w+", text)) < MIN_WORDS or await self._live_clock() is None:
@@ -699,15 +709,18 @@ class PracticeRoom:
             repeated=repeated,
             asked_ai=bool(self.ai_question),
         )
-        result = await get_persona_llm_provider().complete_json(
-            system=system,
-            prompt=f"Discussion so far:\n{history}\n\nWhat do you say next?",
-            schema=LINE_SCHEMA,
-            # The prompt caps the words; this caps tokens. A reasoning model spends
-            # some before it answers, and at 150 a long prompt left too few for the
-            # JSON (Groq: json_validate_failed, a student's turn went unanswered).
-            max_tokens=PERSONA_MAX_TOKENS,
-        )
+        with trace_context(
+            purpose="persona", agent=persona["name"], session_id=self.sid, run=cue or "reply"
+        ):
+            result = await get_persona_llm_provider().complete_json(
+                system=system,
+                prompt=f"Discussion so far:\n{history}\n\nWhat do you say next?",
+                schema=LINE_SCHEMA,
+                # The prompt caps the words; this caps tokens. A reasoning model spends
+                # some before it answers, and at 150 a long prompt left too few for the
+                # JSON (Groq: json_validate_failed, a student's turn went unanswered).
+                max_tokens=PERSONA_MAX_TOKENS,
+            )
         # Clean the spoken text (some models wrap it in quotes) and build the typed result.
         text = str(result.data.get("text", "")).strip().strip('"')
         return Line(
@@ -789,12 +802,22 @@ class PracticeRoom:
             started_audio = True
             # Stream the synthesized speech to the browser chunk by chunk.
             if audio:
+                tts_t0 = time.perf_counter()
+                first_byte_ms: float | None = None
                 try:
                     async for chunk in tts.stream(text, persona["voice_id"]):
                         if self.barge.is_set():
                             return True  # cut before anything was audible
+                        if first_byte_ms is None:
+                            first_byte_ms = (time.perf_counter() - tts_t0) * 1000
                         total_bytes += len(chunk)
                         await self._send_bytes(chunk)
+                    record(
+                        kind="tts", name=persona["name"], purpose="persona", session_id=self.sid,
+                        provider=tts.name, ttfb_ms=first_byte_ms,
+                        latency_ms=(time.perf_counter() - tts_t0) * 1000,
+                        meta={"audio_bytes": total_bytes, "chars": len(text)},
+                    )  # fmt: skip
                 except TTSError as exc:
                     # TTS failed: fall back to the browser's built-in voice for this line.
                     logger.warning("tts failed, falling back", extra={"error": str(exc)})
@@ -816,6 +839,15 @@ class PracticeRoom:
             await self._send_json(
                 server_frame(ServerEvent.PERSONA_AUDIO_READY, self.sid, {"candidate_label": label})
             )
+            if self.reply_clock is not None:
+                # What the student feels: end of their turn to the reply being audible.
+                record(
+                    kind="latency", name="reply_latency", purpose="persona", session_id=self.sid,
+                    latency_ms=(time.monotonic() - self.reply_clock) * 1000,
+                    meta={"persona": persona["name"], "cue": cue or "reply",
+                          "words": len(text.split())},
+                )  # fmt: skip
+                self.reply_clock = None
             await hub.broadcast(
                 self.sid,
                 server_frame(

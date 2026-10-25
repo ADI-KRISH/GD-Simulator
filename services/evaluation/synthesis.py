@@ -54,6 +54,7 @@ from services.common.contracts import CandidateMetrics, EvaluationOutput
 from services.evaluation.aggregator import AggregatedScore, aggregate_candidate  # score math
 from services.llm import get_llm_provider  # model that writes the narrative
 from services.llm.base import ToolDefinition  # tools the model may call for numbers
+from services.observability.context import trace_context  # tag the call for the trace
 
 logger = logging.getLogger(__name__)
 
@@ -569,20 +570,21 @@ async def synthesise(
     tools = build_tools(candidate_label, outputs, weights)
 
     try:
-        result = await provider.complete_with_tools(
-            system=SYSTEM_PROMPT,
-            prompt=build_prompt(
-                candidate_label,
-                outputs,
-                metrics,
-                topic,
-                own_lines_for(candidate_label, segments or []),
-                openings_for(candidate_label, metrics, segments or []),
-            ),
-            tools=tools,
-            schema=RESPONSE_SCHEMA,
-            max_tokens=SYNTHESIS_MAX_TOKENS,
-        )
+        with trace_context(purpose="synthesis", agent="synthesis", candidate=candidate_label):
+            result = await provider.complete_with_tools(
+                system=SYSTEM_PROMPT,
+                prompt=build_prompt(
+                    candidate_label,
+                    outputs,
+                    metrics,
+                    topic,
+                    own_lines_for(candidate_label, segments or []),
+                    openings_for(candidate_label, metrics, segments or []),
+                ),
+                tools=tools,
+                schema=RESPONSE_SCHEMA,
+                max_tokens=SYNTHESIS_MAX_TOKENS,
+            )
     except Exception as exc:
         # Deliberately broad: a synthesis failure must never fail the job, and
         # this is the last stage, so there is nothing downstream to protect.

@@ -7,6 +7,7 @@ import "./immersive.css";  // styles for the live practice/room screens
 import "./refresh.css";  // design refresh layer 1
 import "./refresh2.css";  // design refresh layer 2
 import "./refresh3.css";  // design refresh layer 3
+import "./observability.css";  // tracing dashboard
 import "./theme.css";  // dark theme, loaded last so its tokens win
 
 /** Page title and description for every route. */

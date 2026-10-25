@@ -151,6 +151,11 @@ export function Sidebar() {
       <nav className="side-nav" aria-label="Main">
         {MAIN_NAV.map((n) => item(n.href, n.label, n.icon, n.match(pathname)))}
       </nav>
+      {user.role !== "candidate" && (
+        <nav className="side-nav" aria-label="Developer">
+          {item("/observability", "Observability", "chart", pathname.startsWith("/observability"))}
+        </nav>
+      )}
       <nav className="side-nav side-nav--lower" aria-label="Account">
         {item("/notifications", "Notifications", "bell", pathname === "/notifications", unread)}
         {item("/profile", "Profile", "user", pathname === "/profile")}

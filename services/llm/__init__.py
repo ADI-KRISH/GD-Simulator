@@ -65,6 +65,11 @@ def get_llm_provider() -> LLMProvider:
         else:
             # Anything else (including "stub") means the offline deterministic model.
             _provider = StubLLM()
+        # Every call through the provider is recorded (observability/).
+        if settings.trace_enabled:
+            from services.observability.tracing import TracingProvider
+
+            _provider = TracingProvider(_provider)
         # Log the choice once so it is obvious which model a run used.
         logger.info(
             "llm provider selected",
@@ -99,6 +104,10 @@ def get_persona_llm_provider() -> LLMProvider:
             from services.llm.anthropic_provider import AnthropicProvider
 
             _persona_provider = AnthropicProvider(model=model)
+        if settings.trace_enabled:
+            from services.observability.tracing import TracingProvider
+
+            _persona_provider = TracingProvider(_persona_provider)
     return _persona_provider
 
 
