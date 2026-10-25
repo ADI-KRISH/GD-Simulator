@@ -93,3 +93,16 @@ def test_verify_segment_confirms_flags_overlap_and_low_confidence():
 def test_evidence_resting_only_on_uncertain_attribution_is_flagged():
     segs = [_seg("A", 0, 20, 0.3)]
     assert any("uncertain" in i for i in audit_evidence(_out("a point"), segs))
+
+
+def test_critic_hints_name_the_real_speaker_and_the_candidates_real_lines():
+    segs = [
+        TranscriptSegment(session_id="s", candidate_id="A", start=0, end=10, confidence=0.9,
+                          text="Remote work saves commuting time."),
+        TranscriptSegment(session_id="s", candidate_id="B", start=100, end=110, confidence=0.9,
+                          text="We should split the work by region."),
+    ]  # fmt: skip
+    out = _out("raised a point")
+    out.evidence[0].timestamp = "01:42"  # B was speaking, not A
+    issue = audit_evidence(out, segs)[0]
+    assert "speaking then: B" in issue and '00:00 "Remote work saves commuting time."' in issue

@@ -242,6 +242,32 @@ def build_evidence_tools(
     ]
 
 
+def _line(s: TranscriptSegment) -> str:
+    """One transcript line as 'mm:ss "text"', for the critic's hints."""
+    return f'{int(s.start) // 60:02d}:{int(s.start) % 60:02d} "{s.text[:80]}"'
+
+
+def _hint(
+    segments: list[TranscriptSegment], who: str, *, at: float | None, words: str
+) -> str:
+    """What the specialist needs to fix a bad citation: who was speaking at `at`, and the
+    candidate's own real lines nearest to the cited time or most like the quoted words."""
+    mine = [s for s in segments if s.candidate_id == who]
+    parts = []
+    if at is not None:
+        others = sorted({s.candidate_id for s in segments if _near(s, at)} - {who})
+        if others:
+            parts.append(f"speaking then: {', '.join(others)}")
+    want = set(_norm(words).split())
+    near = sorted(
+        mine,
+        key=lambda s: (-len(want & set(_norm(s.text).split())), abs(s.start - (at or 0))),
+    )[:2]
+    if near:
+        parts.append("their real lines: " + "; ".join(_line(s) for s in near))
+    return f" ({' | '.join(parts)})" if parts else ""
+
+
 def audit_evidence(output: EvaluationOutput, segments: list[TranscriptSegment]) -> list[str]:
     """Critic check: does each cited moment match something the candidate said?
 
@@ -264,7 +290,10 @@ def audit_evidence(output: EvaluationOutput, segments: list[TranscriptSegment]) 
         # A quoted phrase must really be something this candidate said.
         for quote in re.findall(r'["“]([^"”]+)["”]', item.summary):
             if len(quote.split()) >= MIN_QUOTE_WORDS and _norm(quote) not in spoken:
-                issues.append(f'quote not found in {output.candidate_id}\'s speech: "{quote[:60]}"')
+                hint = _hint(segments, output.candidate_id, at=None, words=quote)
+                issues.append(
+                    f'quote not found in {output.candidate_id}\'s speech: "{quote[:60]}"{hint}'
+                )
         at = parse_timestamp(item.timestamp)
         # The cited time must parse...
         if at is None:
@@ -273,9 +302,10 @@ def audit_evidence(output: EvaluationOutput, segments: list[TranscriptSegment]) 
         else:
             hits = [s for s in mine if _near(s, at)]
             if not hits:
+                hint = _hint(segments, output.candidate_id, at=at, words=item.summary)
                 issues.append(
                     f"at {item.timestamp} candidate {output.candidate_id} was not speaking "
-                    f'("{item.summary[:60]}")'
+                    f'("{item.summary[:60]}"){hint}'
                 )
             elif all(s.confidence < UNCERTAIN_BELOW for s in hits):
                 issues.append(f"at {item.timestamp} the speaker attribution is uncertain")

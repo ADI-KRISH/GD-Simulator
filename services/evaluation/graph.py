@@ -64,6 +64,7 @@ that calls the same deterministic aggregator as before, and no model runs inside
 it (claude.md invariant 5). Framework or not, the number stays in code.
 """
 
+import asyncio  # revision re-asks run together
 import logging  # node progress logs
 import operator  # operator.add merges list results from parallel nodes
 from typing import Annotated, Any, TypedDict  # graph state typing with reducers
@@ -277,35 +278,36 @@ async def revise_node(state: EvaluationState) -> dict[str, Any]:
     # Work on copies so the original outputs survive a failed revision.
     outputs = {k: list(v) for k, v in state["outputs_by_candidate"].items()}
     new_runs: list[AgentRun] = []
-    for key, issues in state["critic_notes"].items():
-        # Keys look like "agent/candidate"; split them back into the two parts.
-        agent_name, label = key.split("/", 1)
-        agent = ALL_AGENTS[agent_name]
-        # Re-ask that specialist about that candidate, including the critic's objections.
-        run = await run_agent(
-            agent,
-            state["context"],
-            state["packets"][label],
-            tools,
-            feedback="; ".join(issues),
-        )
+    # Keys look like "agent/candidate"; split them back into the two parts.
+    flagged = [(*key.split("/", 1), issues) for key, issues in state["critic_notes"].items()]
+    failed_runs = [r for r in state["runs"] if r.output is None]
+    # Every re-ask is independent, so run them together: one round trip, not one per verdict.
+    ctx = state["context"]
+    results = await asyncio.gather(
+        *(
+            run_agent(ALL_AGENTS[a], ctx, state["packets"][label], tools, feedback="; ".join(i))
+            for a, label, i in flagged
+        ),
+        *(
+            run_agent(ALL_AGENTS[f.agent], ctx, state["packets"][f.candidate_label], tools)
+            for f in failed_runs
+        ),
+    )
+    for (agent_name, label, issues), run in zip(flagged, results, strict=False):
         run.critic = [f"revised after critic: {'; '.join(issues)}"]
         # A failed revision keeps the original verdict.
         if run.output is None:
             continue
         # Swap the revised verdict in for the one it replaces (same dimension).
-        outputs[label] = [
-            run.output if o.dimension == agent.dimension else o for o in outputs.get(label, [])
-        ]
+        dimension = ALL_AGENTS[agent_name].dimension
+        outputs[label] = [run.output if o.dimension == dimension else o for o in outputs[label]]
         new_runs.append(run)
-    # Retry specialists that produced nothing; a recovered one is no longer a failure.
+    # A retried specialist that recovered is no longer a failure.
     failures = list(state["failures"])
-    for failed in [r for r in state["runs"] if r.output is None]:
-        label = failed.candidate_label
-        agent, packet = ALL_AGENTS[failed.agent], state["packets"][label]
-        run = await run_agent(agent, state["context"], packet, tools)
+    for failed, run in zip(failed_runs, results[len(flagged) :], strict=True):
         if run.output is None:
             continue
+        label = failed.candidate_label
         outputs.setdefault(label, []).append(run.output)
         new_runs.append(run)
         failures = [f for f in failures if not f.startswith(f"{failed.agent}/{label}:")]
