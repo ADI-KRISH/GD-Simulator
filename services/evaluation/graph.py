@@ -256,8 +256,13 @@ def critic_node(state: EvaluationState) -> dict[str, Any]:
 
 
 def needs_revision(state: EvaluationState) -> str:
-    """One revision round at most: the critic's verdict is only acted on once."""
-    if state.get("critic_notes") and settings.evaluation_agentic:
+    """One revision round at most: the critic's verdict is only acted on once.
+
+    Failed specialists are retried in the same round (design §4: the supervisor
+    requests more analysis when results are missing).
+    """
+    failed = any(r.output is None for r in state["runs"])
+    if (state.get("critic_notes") or failed) and settings.evaluation_agentic:
         return "revise"
     return "aggregate"
 
@@ -293,7 +298,18 @@ async def revise_node(state: EvaluationState) -> dict[str, Any]:
             run.output if o.dimension == agent.dimension else o for o in outputs.get(label, [])
         ]
         new_runs.append(run)
-    return {"outputs_by_candidate": outputs, "runs": new_runs}
+    # Retry specialists that produced nothing; a recovered one is no longer a failure.
+    failures = list(state["failures"])
+    for failed in [r for r in state["runs"] if r.output is None]:
+        label = failed.candidate_label
+        agent, packet = ALL_AGENTS[failed.agent], state["packets"][label]
+        run = await run_agent(agent, state["context"], packet, tools)
+        if run.output is None:
+            continue
+        outputs.setdefault(label, []).append(run.output)
+        new_runs.append(run)
+        failures = [f for f in failures if not f.startswith(f"{failed.agent}/{label}:")]
+    return {"outputs_by_candidate": outputs, "runs": new_runs, "failures": failures}
 
 
 def aggregate_node(state: EvaluationState) -> dict[str, Any]:
@@ -315,6 +331,12 @@ def aggregate_node(state: EvaluationState) -> dict[str, Any]:
             scores[label].review_reasons.append(
                 f"{left} evidence problem(s) left after critic review"
             )
+    # Agents that disagree widely on the same dimension: preserve the doubt for a human.
+    for conflict in state.get("conflicts") or []:
+        label = conflict.split("/", 1)[0]
+        if label in scores:
+            scores[label].needs_human_review = True
+            scores[label].review_reasons.append(conflict)
     return {"scores": scores}
 
 

@@ -49,6 +49,14 @@ TIMESTAMP_TOLERANCE_SECONDS = 15.0
 OVERCONFIDENT_AT = 0.85
 MIN_EVIDENCE_FOR_CONFIDENCE = 2
 MIN_QUOTE_WORDS = 4
+# Speaker attribution below this is shown to evaluators as uncertain and is not
+# accepted as the only support for a verdict.
+UNCERTAIN_BELOW = 0.6
+
+
+def _near(s: TranscriptSegment, at: float) -> bool:
+    """True if `at` falls within (a little slack of) the segment."""
+    return s.start - TIMESTAMP_TOLERANCE_SECONDS <= at <= s.end + TIMESTAMP_TOLERANCE_SECONDS
 
 
 def _norm(text: str) -> str:
@@ -104,6 +112,33 @@ def build_evidence_tools(
             and s.start <= end_seconds
             and (candidate_label is None or s.candidate_id == candidate_label)
         ][:40]
+
+    def verify_segment(candidate_label: str, at_seconds: float) -> dict[str, Any]:
+        """Tool: was this candidate really the speaker at this moment?
+
+        Confirmed only when a segment attributed to them covers the time with good
+        attribution confidence and nobody else's speech overlaps it. Anything else
+        is uncertain and must not be cited as a confirmed finding.
+        """
+        near = [s for s in segments if s.candidate_id == candidate_label and _near(s, at_seconds)]
+        if not near:
+            return {"verdict": "not_speaking", "reason": f"{candidate_label} has no speech here"}
+        overlapping = sorted(
+            {
+                o.candidate_id
+                for s in near
+                for o in segments
+                if o.candidate_id != candidate_label and o.start < s.end and o.end > s.start
+            }
+        )
+        weakest = min(s.confidence for s in near)
+        if weakest < UNCERTAIN_BELOW or overlapping:
+            return {
+                "verdict": "uncertain",
+                "attribution_confidence": round(weakest, 2),
+                "overlapping_speakers": overlapping,
+            }
+        return {"verdict": "confirmed", "attribution_confidence": round(weakest, 2)}
 
     def get_candidate_metrics(candidate_label: str) -> dict[str, Any]:
         """Tool: a candidate's measured metrics (speaking time, turns, interruptions, ...)."""
@@ -161,6 +196,16 @@ def build_evidence_tools(
                 },
             },
             handler=get_transcript_range,
+        ),
+        ToolDefinition(
+            name="verify_segment",
+            description="Check a moment is really this candidate (attribution, overlap).",
+            input_schema={
+                "type": "object",
+                "required": ["candidate_label", "at_seconds"],
+                "properties": {"candidate_label": _LABEL, "at_seconds": {"type": "number"}},
+            },
+            handler=verify_segment,
         ),
         ToolDefinition(
             name="get_candidate_metrics",
@@ -225,12 +270,13 @@ def audit_evidence(output: EvaluationOutput, segments: list[TranscriptSegment]) 
         if at is None:
             issues.append(f"evidence timestamp {item.timestamp!r} is not mm:ss")
         # ...and fall within (a little slack of) a segment where they actually spoke.
-        elif not any(
-            s.start - TIMESTAMP_TOLERANCE_SECONDS <= at <= s.end + TIMESTAMP_TOLERANCE_SECONDS
-            for s in mine
-        ):
-            issues.append(
-                f"at {item.timestamp} candidate {output.candidate_id} was not speaking "
-                f'("{item.summary[:60]}")'
-            )
+        else:
+            hits = [s for s in mine if _near(s, at)]
+            if not hits:
+                issues.append(
+                    f"at {item.timestamp} candidate {output.candidate_id} was not speaking "
+                    f'("{item.summary[:60]}")'
+                )
+            elif all(s.confidence < UNCERTAIN_BELOW for s in hits):
+                issues.append(f"at {item.timestamp} the speaker attribution is uncertain")
     return issues

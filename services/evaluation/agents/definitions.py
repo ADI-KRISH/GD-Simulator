@@ -110,6 +110,10 @@ COLLABORATION = EvaluatorAgent(
 3-4   Largely ignored others; parallel monologue.
 0-2   Dismissive, talked over people, or did not engage at all.
 
+Score the QUALITY of engagement, not how often they spoke: someone with few
+turns who responded well scores high, and frequent turns that ignore others
+score low. Frequency belongs to the behavior dimension, so do not count it twice.
+
 Use the interaction graph: a candidate with no incoming or outgoing edges did
 not collaborate, whatever they said. A candidate who responded to several
 different people engaged broadly.""",

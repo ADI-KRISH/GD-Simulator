@@ -40,6 +40,7 @@ of it.
 from dataclasses import dataclass, field  # SharedContext / EvidencePacket containers
 
 from services.common.contracts import CandidateMetrics, RollingState, TranscriptSegment
+from services.evaluation.tools import UNCERTAIN_BELOW  # below this a speaker is flagged
 from services.metrics.engine import SessionMetrics  # measured numbers to include as facts
 from services.speech.chunking import format_timestamp  # mm:ss stamps for quoted lines
 
@@ -144,6 +145,7 @@ def _dialogue(segments: list[TranscriptSegment]) -> str:
     # Chronological lines with mm:ss stamps, which the evidence must cite.
     return "\n".join(
         f"  {format_timestamp(s.start)} {s.candidate_id}: {s.text}"
+        + ("  [uncertain speaker]" if s.confidence < UNCERTAIN_BELOW else "")
         for s in sorted(segments, key=lambda s: s.start)
     )
 

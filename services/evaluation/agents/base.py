@@ -215,6 +215,8 @@ TOOL_GUIDANCE = (
     "get_candidate_metrics for interruptions and replies, find_quotes and "
     "get_transcript_range to verify a moment and quote it exactly. Every piece of "
     "evidence you cite must be a time at which that candidate really spoke. "
+    "Lines marked [uncertain speaker] may belong to someone else: call "
+    "verify_segment and never cite an unconfirmed moment as a finding. "
     "Interruptions are penalised by the system itself - do not lower your "
     "dimension score for them a second time."
 )
