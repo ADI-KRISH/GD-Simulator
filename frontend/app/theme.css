@@ -1,0 +1,154 @@
+/*
+ * Dark theme. Loaded after every other stylesheet; `:root[data-theme="dark"]` is more
+ * specific than the plain `:root` tokens, so the whole app follows by changing tokens.
+ * Below the tokens: the few pastel chips and panels that hard-code light colours.
+ */
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0d1220;
+  --surface: #151c2e;
+  --surface-2: #1a2236;
+  --border: #263049;
+  --text: #e6ebf5;
+  --muted: #93a0ba;
+  --accent: #5b8cff;
+  --accent-2: #7aa4ff;
+  --accent-soft: rgb(91 140 255 / 0.16);
+  --gradient: linear-gradient(135deg, #4f7df0, #6f9bff);
+  --danger: #ff6b70;
+  --ok: #34c985;
+  --warn: #e0a838;
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.35), 0 8px 24px rgb(0 0 0 / 0.3);
+}
+
+/* ---- the toggle itself (both themes) ------------------------------------- */
+
+.theme-toggle {
+  display: inline-grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  box-shadow: none;
+}
+
+.theme-toggle:hover:not(:disabled) {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.theme-toggle svg {
+  width: 18px;
+  height: 18px;
+}
+
+.side-user .theme-toggle {
+  flex: none;
+}
+
+/* A short fade when the theme changes, not on every hover. */
+html,
+body,
+.card,
+.sidebar,
+.guestbar {
+  transition: background-color 200ms ease, border-color 200ms ease, color 200ms ease;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ---- chips and panels with fixed light colours --------------------------- */
+
+:root[data-theme="dark"] :is(.badge, .orb-badge, .tile-icon--violet) {
+  background: rgb(139 108 240 / 0.18);
+  color: #b9a4ff;
+}
+
+:root[data-theme="dark"] .tile-icon--teal {
+  background: rgb(38 190 160 / 0.16);
+  color: #4fd8bd;
+}
+
+:root[data-theme="dark"] .tile-icon--amber {
+  background: rgb(224 168 56 / 0.16);
+  color: #e8b64d;
+}
+
+:root[data-theme="dark"] :is(.pill--live, .chip--ok, .complete-badge, .score-pill.score--good) {
+  background: rgb(52 201 133 / 0.15);
+  color: #5fe0a4;
+}
+
+:root[data-theme="dark"] :is(.score-pill.score--mid, .try-saying--practice) {
+  background: rgb(224 168 56 / 0.15);
+  color: #e8b64d;
+}
+
+:root[data-theme="dark"] .try-saying--practice :is(small, svg) {
+  color: #e8b64d;
+}
+
+:root[data-theme="dark"]
+  :is(.arena-phase--live, .timer-pill--warn, .notice--interruption, .score-pill.score--low) {
+  background: rgb(255 107 112 / 0.14);
+  color: #ff8a8e;
+}
+
+:root[data-theme="dark"] .notice--interruption {
+  border-color: rgb(255 107 112 / 0.4);
+}
+
+:root[data-theme="dark"] .arena-btn--danger {
+  background: var(--surface);
+  border-color: rgb(255 107 112 / 0.45);
+}
+
+:root[data-theme="dark"] .arena-btn--danger:hover:not(:disabled) {
+  background: rgb(255 107 112 / 0.14);
+}
+
+:root[data-theme="dark"] .chip--away {
+  background: var(--surface-2);
+}
+
+:root[data-theme="dark"] :is(.vtile-dot, .dot--away) {
+  background: #4a5670;
+}
+
+:root[data-theme="dark"] .vtile-label {
+  background: rgb(21 28 46 / 0.9);
+}
+
+:root[data-theme="dark"] input[role="switch"] {
+  background: #3a4560;
+}
+
+:root[data-theme="dark"] .insight--good {
+  background: rgb(52 201 133 / 0.1);
+  border-color: rgb(52 201 133 / 0.3);
+}
+
+:root[data-theme="dark"] .insight--good h3 {
+  color: #5fe0a4;
+}
+
+:root[data-theme="dark"] .insight--bad {
+  background: rgb(255 107 112 / 0.1);
+  border-color: rgb(255 107 112 / 0.3);
+}
+
+:root[data-theme="dark"] .insight--bad h3 {
+  color: #ff8a8e;
+}
+
+:root[data-theme="dark"] .skeleton {
+  background: linear-gradient(100deg, #1a2236 30%, #232d46 50%, #1a2236 70%);
+}

@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gd-platform/contracts/transcript_segment.schema.json",
+  "title": "TranscriptSegment",
+  "description": "A single speaker-attributed, timestamped unit of transcribed speech. Produced by the speech pipeline (STT + diarization) and persisted IMMEDIATELY — never buffered to session end. This is the source of truth. See design §11, §13.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["session_id", "candidate_id", "start", "end", "text", "confidence"],
+  "properties": {
+    "session_id": {
+      "type": "string",
+      "description": "GD session this segment belongs to.",
+      "minLength": 1
+    },
+    "candidate_id": {
+      "type": "string",
+      "description": "Speaker resolved by diarization / speaker mapping.",
+      "minLength": 1
+    },
+    "start": {
+      "type": "number",
+      "description": "Segment start time in seconds from session start.",
+      "minimum": 0
+    },
+    "end": {
+      "type": "number",
+      "description": "Segment end time in seconds from session start. Must be >= start.",
+      "minimum": 0
+    },
+    "text": {
+      "type": "string",
+      "description": "Transcribed text for this segment."
+    },
+    "confidence": {
+      "type": "number",
+      "description": "STT confidence for this segment, 0.0–1.0.",
+      "minimum": 0,
+      "maximum": 1
+    }
+  },
+  "examples": [
+    {
+      "session_id": "GD123",
+      "candidate_id": "A",
+      "start": 42.1,
+      "end": 48.8,
+      "text": "I think AI will create new categories of employment.",
+      "confidence": 0.94
+    }
+  ]
+}

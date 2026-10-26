@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gd-platform/contracts/evaluation_job.schema.json",
+  "title": "EvaluationJob",
+  "description": "The durable job created when a GD ends, enqueued for judge workers. Carries everything the Supervisor needs. Must be IDEMPOTENT: keyed by session_id + evaluation_version so reprocessing never yields duplicate/inconsistent reports. Records rubric/prompt/agent versions for reproducibility. See design §20, §39, §40.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["session_id", "evaluation_version", "topic", "gd_type", "rubric", "versions"],
+  "properties": {
+    "session_id": { "type": "string", "minLength": 1 },
+    "evaluation_version": {
+      "type": "integer",
+      "description": "Together with session_id forms the idempotency key.",
+      "minimum": 1
+    },
+    "topic": { "type": "string" },
+    "gd_type": {
+      "type": "string",
+      "description": "Drives dynamic agent selection by the Supervisor. See design §22.",
+      "enum": ["technical", "leadership", "hr_social", "general"]
+    },
+    "rubric": {
+      "type": "object",
+      "description": "Scoring rubric including dimension weights. Weights should sum to 1.0.",
+      "additionalProperties": true
+    },
+    "candidate_ids": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "artifacts": {
+      "type": "object",
+      "description": "References/pointers to the full evidence package (transcript, final rolling state, metrics). Prefer references over inlining large blobs.",
+      "additionalProperties": false,
+      "properties": {
+        "transcript_ref": { "type": "string" },
+        "final_rolling_state_ref": { "type": "string" },
+        "metrics_ref": { "type": "string" }
+      }
+    },
+    "versions": {
+      "type": "object",
+      "description": "Configuration versions for reproducibility. See design §40.",
+      "additionalProperties": false,
+      "required": ["rubric_version", "prompt_version", "agent_version"],
+      "properties": {
+        "rubric_version": { "type": "string" },
+        "prompt_version": { "type": "string" },
+        "agent_version": { "type": "string" }
+      }
+    }
+  },
+  "examples": [
+    {
+      "session_id": "GD123",
+      "evaluation_version": 1,
+      "topic": "Should AI-generated content be regulated?",
+      "gd_type": "technical",
+      "rubric": {
+        "weights": { "content": 0.30, "communication": 0.20, "leadership": 0.20, "collaboration": 0.20, "behavior": 0.10 }
+      },
+      "candidate_ids": ["A", "B", "C", "D", "E", "F"],
+      "artifacts": {
+        "transcript_ref": "s3://gd/GD123/transcript.json",
+        "final_rolling_state_ref": "s3://gd/GD123/state.json",
+        "metrics_ref": "s3://gd/GD123/metrics.json"
+      },
+      "versions": { "rubric_version": "2.1", "prompt_version": "4.0", "agent_version": "1.8" }
+    }
+  ]
+}

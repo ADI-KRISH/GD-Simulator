@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Node / Next.js
+node_modules/
+.next/
+# the platform launcher's build log (scripts/start_platform.ps1)
+gd_platform_build.log
+out/
+.turbo/
+npm-debug.log*
+
+# Local secrets and state — never commit
+.env
+.env.*
+*.local.env
+
+# Local volumes / generated data
+infra/data/
+services/media/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local tool state / build artefacts
+.claude/settings.local.json
+*.tsbuildinfo
+
+# Local SQLite database (no-Docker mode)
+*.db
+*.db-wal
+*.db-shm
+
+# Backend runtime logs
+backend.*.log
+
+# Generated audio samples — tracked only when small (<5 MB total)
+# voice_samples/ is intentionally included (currently ~0.5 MB)

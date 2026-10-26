@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gd-platform/contracts/evaluation_output.schema.json",
+  "title": "EvaluationOutput",
+  "description": "Structured output emitted by a single specialized evaluator agent for one candidate on one dimension. LLMs emit this; they do NOT emit final overall scores — the deterministic aggregator combines per-dimension scores using the weighting policy. Every output must validate against this schema before use; reject/retry on malformed output. See design §50, §31, §32.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["candidate_id", "dimension", "score", "confidence", "strengths", "weaknesses", "evidence"],
+  "properties": {
+    "candidate_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "dimension": {
+      "type": "string",
+      "description": "Evaluation dimension this output covers.",
+      "enum": ["content", "communication", "leadership", "collaboration", "critical_thinking", "behavior"]
+    },
+    "score": {
+      "type": "number",
+      "description": "Per-dimension score on a 0–10 scale.",
+      "minimum": 0,
+      "maximum": 10
+    },
+    "confidence": {
+      "type": "number",
+      "description": "Evaluator's confidence in this assessment, 0.0–1.0. Low confidence may route to human review. See design §51, §52.",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "strengths": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "weaknesses": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "evidence": {
+      "type": "array",
+      "description": "Supporting evidence drawn from the transcript. Required for explainability — no unexplained scores. See design §57 Principle 12, NFR-08.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["timestamp", "summary"],
+        "properties": {
+          "timestamp": {
+            "type": "string",
+            "description": "Transcript timestamp the evidence refers to, e.g. '05:14'."
+          },
+          "summary": {
+            "type": "string",
+            "description": "Short description of what happened at that point."
+          }
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "candidate_id": "A",
+      "dimension": "collaboration",
+      "score": 8.7,
+      "confidence": 0.89,
+      "strengths": ["Built on B's argument", "Responded directly to disagreement"],
+      "weaknesses": ["Could have invited another participant"],
+      "evidence": [
+        { "timestamp": "05:14", "summary": "A acknowledged B's concern and extended it." }
+      ]
+    }
+  ]
+}

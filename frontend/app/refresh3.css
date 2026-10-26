@@ -1,0 +1,485 @@
+/*
+ * Motion. Everything here either answers something the person did (hover, press,
+ * open) or shows that something is happening (progress, speaking, arriving), with
+ * one entrance per page. It is all switched off under prefers-reduced-motion.
+ */
+
+@property --p {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+
+:root {
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* ---- one entrance per page ---------------------------------------------- */
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.shell > div > :is(header, section, article, form, .card, .stat-row, .complete-grid, .lobby-extras, .create-layout) {
+  animation: rise 480ms var(--ease-out) backwards;
+}
+
+.shell > div > :nth-child(2) {
+  animation-delay: 70ms;
+}
+.shell > div > :nth-child(3) {
+  animation-delay: 140ms;
+}
+.shell > div > :nth-child(4) {
+  animation-delay: 210ms;
+}
+.shell > div > :nth-child(n + 5) {
+  animation-delay: 280ms;
+}
+
+.options > .option {
+  animation: rise 520ms var(--ease-out) backwards;
+}
+.options > .option:nth-child(2) {
+  animation-delay: 120ms;
+}
+.options > .option:nth-child(3) {
+  animation-delay: 220ms;
+}
+
+/* ---- hover and press ------------------------------------------------------ */
+
+.option,
+.lobby-card,
+.past-item,
+.session-card,
+.seat-card,
+.insight,
+.suggestion {
+  transition: transform 180ms var(--ease-out), box-shadow 180ms ease, border-color 180ms ease;
+}
+
+.option:hover,
+.lobby-card:hover,
+.past-item:hover,
+.session-card:hover {
+  transform: translateY(-3px);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  box-shadow: 0 14px 32px rgb(20 32 51 / 0.1);
+}
+
+.seat-card:not(.seat-card--empty):hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 24px rgb(20 32 51 / 0.08);
+}
+
+button:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+button .nav-icon,
+.option-cta button svg:last-child,
+.view-link svg {
+  transition: transform 180ms var(--ease-out);
+}
+
+.option-cta button:hover svg:last-child,
+.view-link:hover svg {
+  transform: translateX(3px);
+}
+
+.side-link {
+  position: relative;
+  transition: background 140ms ease, color 140ms ease;
+}
+
+.side-link::before {
+  content: "";
+  position: absolute;
+  left: -0.9rem;
+  top: 22%;
+  bottom: 22%;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--accent);
+  transform: scaleY(0);
+  transition: transform 220ms var(--ease-out);
+}
+
+.side-link--active::before {
+  transform: scaleY(1);
+}
+
+.side-link:hover .nav-icon {
+  transform: scale(1.1);
+}
+
+.nav-icon {
+  transition: transform 160ms var(--ease-out);
+}
+
+.ctl-round:hover:not(:disabled) .ctl-ico {
+  transform: translateY(-2px);
+}
+
+.ctl-round:active:not(:disabled) .ctl-ico {
+  transform: scale(0.92);
+}
+
+.ctl-ico {
+  transition: transform 160ms var(--ease-out), background 120ms ease, border-color 120ms ease;
+}
+
+/* ---- opening things -------------------------------------------------------- */
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.select-list {
+  transform-origin: top center;
+  animation: pop-in 140ms var(--ease-out) backwards;
+}
+
+@keyframes fade-slide {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.tab-panel {
+  animation: fade-slide 280ms var(--ease-out) backwards;
+}
+
+.tab {
+  position: relative;
+  transition: color 140ms ease, background 140ms ease;
+}
+
+.tab::after {
+  content: "";
+  position: absolute;
+  left: 12%;
+  right: 12%;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+  transform: scaleX(0);
+  transition: transform 240ms var(--ease-out);
+}
+
+.tab--on {
+  border-bottom-color: transparent;
+}
+
+.tab--on::after {
+  transform: scaleX(1);
+}
+
+/* ---- the room ---------------------------------------------------------------- */
+
+@keyframes seat-in {
+  from {
+    opacity: 0;
+    transform: scale(0.9) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.seat-card {
+  animation: seat-in 420ms var(--ease-out) backwards;
+}
+
+.seat-grid > :nth-child(2) {
+  animation-delay: 60ms;
+}
+.seat-grid > :nth-child(3) {
+  animation-delay: 120ms;
+}
+.seat-grid > :nth-child(4) {
+  animation-delay: 180ms;
+}
+.seat-grid > :nth-child(n + 5) {
+  animation-delay: 240ms;
+}
+
+@keyframes ready-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 55%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 7px transparent;
+  }
+}
+
+.dot--ok {
+  animation: ready-pulse 1.8s ease-out infinite;
+}
+
+.vtile {
+  animation: seat-in 480ms var(--ease-out) backwards;
+}
+
+.tiles > :nth-child(2) {
+  animation-delay: 70ms;
+}
+.tiles > :nth-child(3) {
+  animation-delay: 140ms;
+}
+.tiles > :nth-child(n + 4) {
+  animation-delay: 210ms;
+}
+
+@keyframes speaking-ripple {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 18px transparent;
+  }
+}
+
+.vtile--speaking .orb {
+  animation: speaking-ripple 1.5s ease-out infinite;
+}
+
+.vtile--speaking {
+  transform: translateY(-2px);
+}
+
+.vtile {
+  transition: border-color 140ms ease, box-shadow 140ms ease, transform 200ms var(--ease-out);
+}
+
+@keyframes feed-in {
+  from {
+    opacity: 0;
+    transform: translateX(10px);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    background: transparent;
+  }
+}
+
+.feed li {
+  animation: feed-in 520ms var(--ease-out) backwards;
+}
+
+.caption-bar {
+  transition: border-color 200ms ease;
+}
+
+.caption-now {
+  animation: fade-slide 300ms var(--ease-out) backwards;
+}
+
+.timer-pill--warn {
+  animation: timer-warn 1.2s ease-in-out infinite;
+}
+
+@keyframes timer-warn {
+  50% {
+    background: #f9d2d3;
+  }
+}
+
+.notice {
+  animation: notice-in 320ms var(--ease-out) backwards;
+}
+
+/* ---- report --------------------------------------------------------------------- */
+
+.score-ring--animated {
+  transition: --p 1.2s var(--ease-out);
+}
+
+.bar > span {
+  transition: width 1s var(--ease-out);
+}
+
+.score-row:nth-child(2) .bar > span {
+  transition-delay: 60ms;
+}
+.score-row:nth-child(3) .bar > span {
+  transition-delay: 120ms;
+}
+.score-row:nth-child(4) .bar > span {
+  transition-delay: 180ms;
+}
+.score-row:nth-child(n + 5) .bar > span {
+  transition-delay: 240ms;
+}
+
+.insight {
+  animation: rise 520ms var(--ease-out) backwards;
+  animation-delay: 300ms;
+}
+
+.insight + .insight {
+  animation-delay: 400ms;
+}
+
+.timeline-dot {
+  animation: dot-in 420ms var(--ease-out) backwards;
+  transition: transform 140ms ease;
+}
+
+.timeline-dot:hover {
+  transform: scale(1.5);
+}
+
+@keyframes dot-in {
+  from {
+    transform: scale(0);
+  }
+}
+
+.results-table tbody tr {
+  transition: background 140ms ease;
+  animation: rise 420ms var(--ease-out) backwards;
+}
+
+.results-table tbody tr:nth-child(2) {
+  animation-delay: 60ms;
+}
+.results-table tbody tr:nth-child(3) {
+  animation-delay: 120ms;
+}
+.results-table tbody tr:nth-child(n + 4) {
+  animation-delay: 180ms;
+}
+
+.results-table tbody tr:hover td {
+  background: var(--surface-2);
+}
+
+/* ---- the "discussion complete" screen --------------------------------------------- */
+
+@keyframes badge-pop {
+  0% {
+    transform: scale(0.4);
+    opacity: 0;
+  }
+  60% {
+    transform: scale(1.08);
+    opacity: 1;
+  }
+  100% {
+    transform: none;
+  }
+}
+
+@keyframes badge-ring {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 35%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 22px transparent;
+  }
+}
+
+.complete-badge {
+  animation: badge-pop 600ms var(--ease-out) backwards, badge-ring 2.2s ease-out 600ms infinite;
+}
+
+@keyframes dot-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 50%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 9px transparent;
+  }
+}
+
+.now .progress-dot {
+  animation: dot-pulse 1.4s ease-out infinite;
+}
+
+.progress-track span {
+  background-image: linear-gradient(
+    110deg,
+    transparent 30%,
+    rgb(255 255 255 / 0.45) 50%,
+    transparent 70%
+  );
+  background-size: 200% 100%;
+  background-color: var(--accent);
+  animation: shimmer 1.6s linear infinite;
+}
+
+@keyframes shimmer {
+  from {
+    background-position: 160% 0;
+  }
+  to {
+    background-position: -60% 0;
+  }
+}
+
+/* ---- loading placeholders --------------------------------------------------------- */
+
+.skeleton {
+  height: 5.5rem;
+  border-radius: var(--radius);
+  background: linear-gradient(100deg, #e9eef7 30%, #f6f8fc 50%, #e9eef7 70%);
+  background-size: 220% 100%;
+  animation: skeleton 1.4s ease-in-out infinite;
+}
+
+.skeleton--title {
+  height: 2rem;
+  width: 14rem;
+}
+
+.skeleton--tall {
+  height: 9rem;
+}
+
+@keyframes skeleton {
+  from {
+    background-position: 120% 0;
+  }
+  to {
+    background-position: -120% 0;
+  }
+}
+
+/* ---- reduced motion ------------------------------------------------------------------ */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    animation-delay: 0ms !important;
+    transition-duration: 0.001ms !important;
+    transition-delay: 0ms !important;
+  }
+}

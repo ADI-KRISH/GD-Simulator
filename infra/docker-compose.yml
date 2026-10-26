@@ -1,0 +1,112 @@
+# Local-only stack. Every port is bound to 127.0.0.1 on purpose — nothing here
+# is reachable from outside this machine. See claude.md "Deployment — LOCAL ONLY".
+#
+# Host ports are offset off the defaults (5442, 6389, 9010/9011) because this
+# machine already runs a native PostgreSQL on 5432 and other projects' Redis and
+# MinIO on 6379 / 9000-9001. Container-side ports stay standard. Every host port
+# here is recorded in PORTS.txt (M14's own containers) - take new ones from there.
+name: gd-platform
+
+services:
+  postgres:
+    image: postgres:16.4-alpine
+    container_name: gd-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-gd}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gd_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-gd}
+    ports:
+      - "127.0.0.1:5442:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-gd} -d ${POSTGRES_DB:-gd}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: gd-redis
+    restart: unless-stopped
+    # appendonly so Redis Streams (the MVP event bus) survive a restart.
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:6389:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  livekit:
+    image: livekit/livekit-server:v1.8.0
+    container_name: gd-livekit
+    restart: unless-stopped
+    command: ["--config", "/etc/livekit.yaml"]
+    ports:
+      - "127.0.0.1:7880:7880"       # signaling (WebSocket) + HTTP
+      - "127.0.0.1:7881:7881"       # RTC over TCP
+      - "127.0.0.1:7882:7882/udp"   # RTC UDP mux — single port, no wide range
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+
+  minio:
+    image: minio/minio:RELEASE.2024-09-13T20-26-02Z
+    container_name: gd-minio
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-gd_minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-gd_minio_dev_password}
+    ports:
+      - "127.0.0.1:9010:9000"   # S3 API
+      - "127.0.0.1:9011:9001"   # web console
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: gd-prometheus
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    extra_hosts:
+      # lets Prometheus scrape the backend running on the host at :8114
+      - "host.docker.internal:host-gateway"
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: gd-grafana
+    restart: unless-stopped
+    environment:
+      # Local dev only: no login wall in front of the dashboards.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+    ports:
+      # PORTS.txt: internal ops apps are 8300 + module number. Not 3001: Langfuse's.
+      - "127.0.0.1:8314:3000"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+  prometheus_data:
+  grafana_data:

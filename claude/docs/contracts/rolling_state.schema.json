@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gd-platform/contracts/rolling_state.schema.json",
+  "title": "RollingState",
+  "description": "Compressed 'semantic memory' of the discussion, produced and updated by the Observer Agent every 30–60s (previous state + new chunk + latest metrics → updated state). It supplements, never replaces, the raw transcript. It must NOT contain final per-candidate scores — only observations and understanding. See design §14.4, §16, §47.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["session_id", "main_arguments", "candidate_positions", "recent_interactions", "discussion_direction", "unresolved_questions"],
+  "properties": {
+    "session_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "main_arguments": {
+      "type": "array",
+      "description": "Key arguments raised so far.",
+      "items": { "type": "string" }
+    },
+    "candidate_positions": {
+      "type": "object",
+      "description": "Map of candidate_id -> short description of their stance.",
+      "additionalProperties": { "type": "string" }
+    },
+    "recent_interactions": {
+      "type": "array",
+      "description": "Recent notable interactions, e.g. 'A responded to B', 'C supported A'.",
+      "items": { "type": "string" }
+    },
+    "discussion_direction": {
+      "type": "string",
+      "description": "Where the discussion is currently heading."
+    },
+    "unresolved_questions": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "observations": {
+      "type": "array",
+      "description": "Optional non-scoring behavioral observations, e.g. 'Candidate C has low participation so far'. Observations only — never final scores. See design §16.",
+      "items": { "type": "string" }
+    }
+  },
+  "examples": [
+    {
+      "session_id": "GD123",
+      "main_arguments": ["AI increases productivity", "AI causes job displacement"],
+      "candidate_positions": {
+        "A": "pro-automation",
+        "B": "concerned about displacement",
+        "C": "balanced"
+      },
+      "recent_interactions": ["A responded to B", "C supported A"],
+      "discussion_direction": "employment impact",
+      "unresolved_questions": ["reskilling feasibility"],
+      "observations": ["Candidate C has low participation so far"]
+    }
+  ]
+}

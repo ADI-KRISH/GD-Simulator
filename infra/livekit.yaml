@@ -1,0 +1,22 @@
+# Local-only LiveKit. Self-hosted in Docker; LiveKit Cloud is out of scope.
+port: 7880
+
+rtc:
+  tcp_port: 7881
+  # Single UDP mux port instead of a 10k range — keeps Docker Desktop on
+  # Windows happy and is plenty for local, single-room testing.
+  udp_port: 7882
+  use_external_ip: false
+  # Advertise the host-mapped address. Without this LiveKit advertises its
+  # container IP (172.18.x.x), which the browser can't reach → "could not
+  # establish pc connection".
+  node_ip: 127.0.0.1
+
+# Dev-only credentials. These are intentionally the well-known LiveKit dev
+# values: this server only ever listens on 127.0.0.1. Keep them in sync with
+# LIVEKIT_API_KEY / LIVEKIT_API_SECRET in .env.
+keys:
+  devkey: devsecret_local_only_change_never_shipped
+
+logging:
+  level: info

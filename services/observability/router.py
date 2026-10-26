@@ -1,0 +1,155 @@
+"""HTTP API for the tracing dashboard.
+
+Purpose:     Read-only endpoints over the span table: summary, per-session traces,
+             the call list, one call in full, and evaluator quality signals.
+Access:      Hosts and admins only: spans hold prompts, and prompts hold what
+             students said.
+"""
+
+import uuid
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, Query, Response
+from pydantic import BaseModel, Field
+
+from services.auth.deps import SessionDep, require_role
+from services.auth.models import Role
+from services.common.errors import NotFoundError
+from services.observability import experiments, service
+
+router = APIRouter(
+    prefix="/api/v1/observability",
+    tags=["observability"],
+    dependencies=[Depends(require_role(Role.HOST, Role.ADMIN))],
+)
+
+Hours = Annotated[int, Query(ge=1, le=24 * 90)]
+
+
+@router.get("/summary")
+async def summary(db: SessionDep, hours: Hours = 24, session_id: str | None = None) -> dict:
+    """Totals, breakdowns, speech and reply latency, and the time series."""
+    return await service.summary(db, hours, session_id)
+
+
+@router.get("/traces")
+async def traces(db: SessionDep, hours: Hours = 24) -> list[dict]:
+    """One roll-up per session."""
+    return await service.traces(db, hours)
+
+
+@router.get("/spans")
+async def spans(
+    db: SessionDep,
+    hours: Hours = 24,
+    kind: str | None = None,
+    purpose: str | None = None,
+    status: str | None = None,
+    agent: str | None = None,
+    model: str | None = None,
+    session_id: str | None = None,
+    q: str | None = Query(None, max_length=100),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+) -> list[dict]:
+    """Filterable list of calls."""
+    return await service.list_spans(
+        db, hours=hours, kind=kind, purpose=purpose, status=status, agent=agent, model=model,
+        session_id=session_id, q=q, limit=limit, offset=offset,
+    )  # fmt: skip
+
+
+@router.get("/trace/{session_id}")
+async def trace(db: SessionDep, session_id: str) -> list[dict]:
+    """All spans of one session with parent links, for the waterfall."""
+    return await service.trace_tree(db, session_id)
+
+
+@router.get("/alerts")
+async def alerts(db: SessionDep) -> list[dict]:
+    """Problems in the last hour."""
+    return await service.alerts(db)
+
+
+@router.get("/spans/{span_id}")
+async def span(db: SessionDep, span_id: uuid.UUID) -> dict:
+    """One call with its full prompt, output and tool calls."""
+    found = await service.get_span(db, span_id)
+    if found is None:
+        raise NotFoundError("span not found")
+    return found
+
+
+@router.get("/quality")
+async def quality(db: SessionDep, hours: Hours = 24 * 7) -> dict:
+    """Evaluator confidence, critic findings and human-review rate."""
+    return await service.quality(db, hours)
+
+
+# ---- datasets and experiments ------------------------------------------------
+
+
+class NewCase(BaseModel):
+    """Save a recorded call as a test case."""
+
+    span_id: uuid.UUID
+    dataset: str = Field(min_length=1, max_length=60)
+    note: str = Field("", max_length=1000)
+    # Defaults to what the call actually returned; send a corrected answer to override.
+    expected: dict | None = None
+
+
+class RunRequest(BaseModel):
+    """Replay a dataset, optionally with another model or system prompt."""
+
+    model: str = Field("", max_length=80)
+    system_prompt: str = Field("", max_length=20_000)
+    label: str = Field("", max_length=60)
+
+
+@router.get("/datasets")
+async def datasets(db: SessionDep) -> list[dict]:
+    """All datasets with their case and run counts."""
+    return await experiments.list_datasets(db)
+
+
+@router.post("/datasets/cases", status_code=201)
+async def add_case(db: SessionDep, body: NewCase) -> dict:
+    """Save a call to a dataset."""
+    case = await experiments.save_case(
+        db, span_id=body.span_id, dataset=body.dataset, note=body.note, expected=body.expected
+    )
+    return experiments.case_dict(case)
+
+
+@router.delete("/datasets/cases/{case_id}", status_code=204)
+async def remove_case(db: SessionDep, case_id: uuid.UUID) -> Response:
+    """Delete a case and its results."""
+    await experiments.delete_case(db, case_id)
+    return Response(status_code=204)
+
+
+@router.get("/datasets/{dataset}/cases")
+async def cases(db: SessionDep, dataset: str) -> list[dict]:
+    """The cases of a dataset."""
+    return await experiments.list_cases(db, dataset)
+
+
+@router.post("/datasets/{dataset}/run")
+async def run(db: SessionDep, dataset: str, body: RunRequest) -> dict:
+    """Replay every case now (this waits for the model) and return the run's summary."""
+    return await experiments.run_dataset(
+        db, dataset, model=body.model, system_prompt=body.system_prompt, label=body.label
+    )
+
+
+@router.get("/datasets/{dataset}/runs")
+async def runs(db: SessionDep, dataset: str) -> list[dict]:
+    """Past runs of a dataset, newest first."""
+    return await experiments.list_runs(db, dataset)
+
+
+@router.get("/runs/{run_id}")
+async def run_detail(db: SessionDep, run_id: str) -> list[dict]:
+    """Each case's answer in a run, beside what was expected."""
+    return await experiments.run_results(db, run_id)
